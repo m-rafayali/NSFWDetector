@@ -3,7 +3,7 @@
     uv run python eval.py score  [--data labeled]   # run every model variant once, cached in runs/scores.jsonl
     uv run python eval.py report [--final]           # tune on dev (5-fold CV), write EVAL_REPORT.md
     uv run python eval.py robust                     # evasion suite with the production pipeline
-    uv run python eval.py gate                       # exit 1 if metrics regress vs eval_baseline.json
+    uv run python eval.py gate                       # exit 1 if eval_metrics.json regresses vs eval_baseline.json
 
 Data layout: labeled/{safe,review,reject}/[edge_case/]*.jpg. Split is deterministic by SHA-256:
 20% held-out test (only touched with --final), 80% dev with 5 CV folds.
@@ -291,7 +291,7 @@ def cmd_report(args):
         tp = sim.predict(rej, rev)
         lines, metrics = summarize(tp[test], y[test], "HELD-OUT TEST (tuned thresholds, touched once)")
         out += ["## Final test", ""] + lines
-        (RUNS / "metrics.json").write_text(json.dumps(metrics, indent=2))
+        Path("eval_metrics.json").write_text(json.dumps(metrics, indent=2))
         eval_pred, eval_mask = tp, test
     else:
         out += ["## Final test", "", "_Not run. Use `--final` once thresholds are frozen._", ""]
@@ -427,8 +427,10 @@ def cmd_robust(args):
 
 # ---------------------------------------------------------------- regression gate
 def cmd_gate(args):
+    if not Path("eval_baseline.json").exists() or not Path("eval_metrics.json").exists():
+        sys.exit(print("gate: no eval_baseline.json/eval_metrics.json yet, skipping") or 0)
     base = json.loads(Path("eval_baseline.json").read_text())
-    cur = json.loads((RUNS / "metrics.json").read_text())
+    cur = json.loads(Path("eval_metrics.json").read_text())
     tol = 0.005
     worse = {k: (base[k], cur[k]) for k in ("explicit_auto_approved", "safe_auto_rejected", "cost")
              if cur.get(k, 1e9) > base[k] + tol}

@@ -1,0 +1,25 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./models:/models:ro
+      - ./keys.yaml:/run/keys.yaml:ro
+      - ./data:/data
+    expose: ["8000"]
+    mem_limit: 1600m          # t3.small has 2 GiB; measured RSS ~0.95 GB (fp32 models)
+    logging:
+      driver: json-file
+      options: {max-size: "20m", max-file: "5"}
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment: [CTC_DOMAIN]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [api]
+volumes:
+  caddy_data: {}

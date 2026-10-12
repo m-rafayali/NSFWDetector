@@ -1,0 +1,18 @@
+# Automatic HTTPS (Let's Encrypt) for $CTC_DOMAIN; its DNS A record must point at this instance.
+{$CTC_DOMAIN} {
+	request_body /v1/moderate/image/batch {
+		max_size 130MB
+	}
+	request_body {
+		max_size 20MB
+	}
+	reverse_proxy api:8000 {
+		transport http {
+			response_header_timeout 30s
+		}
+	}
+	log {
+		output stdout
+		format json
+	}
+}
