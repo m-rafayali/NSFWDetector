@@ -1,0 +1,21 @@
+# data: never commit images or model weights
+labeled/
+data/
+models/
+assests/
+runs/
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+*.heic
+*.heif
+*.onnx
+*.db
+keys.yaml
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store

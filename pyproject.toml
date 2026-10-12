@@ -1,0 +1,28 @@
+[project]
+name = "ctc-mod"
+version = "0.1.0"
+description = "CTC image moderation service (Phase 1: images)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "python-multipart>=0.0.12",
+    "onnxruntime>=1.20",
+    "numpy>=2.0",
+    "pillow>=11.0",
+    "opencv-python-headless>=4.10",
+    "pi-heif>=1.0",
+    "pyyaml>=6.0",
+    "prometheus-client>=0.21",
+    "httpx>=0.28",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "scikit-learn>=1.5", "matplotlib>=3.9", "locust>=2.32"]
+export = ["torch>=2.5", "timm>=1.0", "transformers>=4.46", "onnx>=1.17", "onnxscript>=0.1", "huggingface-hub>=0.26"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

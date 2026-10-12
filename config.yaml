@@ -1,0 +1,85 @@
+# CTC moderation config: model registry + decision policy.
+# Bump policy_version on ANY change to thresholds/rules; it is returned with every decision.
+policy_version: "2026-10-12.1"
+
+# Model registry. `export.py` writes models/<name>.onnx. Disable a model with enabled: false
+# (e.g. drop the AGPL region detector) and the pipeline keeps working without it.
+models:
+  freepik:      # Freepik/nsfw_image_detector, EVA02-base, MIT
+    kind: classifier
+    enabled: true
+    stage: 2          # heavy (~0.4 s on M4): runs only when stage 1 is not clearly safe
+    size: 448
+    resize: squash
+    mean: [0.48145466, 0.4578275, 0.40821073]
+    std: [0.26862954, 0.26130258, 0.27577711]
+    labels: [neutral, low, medium, high]
+  marqo:        # Marqo/nsfw-image-detection-384, ViT-tiny, Apache-2.0
+    kind: classifier
+    enabled: false
+    size: 384
+    resize: squash
+    mean: [0.5, 0.5, 0.5]
+    std: [0.5, 0.5, 0.5]
+    labels: [nsfw, sfw]
+  falconsai:    # Falconsai/nsfw_image_detection, ViT-base-224, Apache-2.0
+    kind: classifier
+    enabled: true
+    stage: 1
+    size: 224
+    resize: squash
+    mean: [0.5, 0.5, 0.5]
+    std: [0.5, 0.5, 0.5]
+    labels: [normal, nsfw]
+  adamcodd:     # AdamCodd/vit-base-nsfw-detector, ViT-base-384, Apache-2.0
+    kind: classifier
+    enabled: false
+    size: 384
+    resize: squash
+    mean: [0.5, 0.5, 0.5]
+    std: [0.5, 0.5, 0.5]
+    labels: [sfw, nsfw]
+  nudenet:      # NudeNet v3.4 320n detector. AGPL-3.0 weights: optional layer, see LICENSES.md
+    kind: detector
+    enabled: true
+    stage: 1
+    size: 320
+    file: nudenet-320n
+    channels: bgr     # what nudenet==3.4.2 actually feeds (its cvtColor+swapRB cancel out)
+
+limits:
+  max_bytes: 15000000     # 15 MB upload cap
+  max_pixels: 40000000    # 40 MP decompression-bomb guard
+  max_frames: 500         # animated GIF/WebP; we score first/middle/last frame and take the max
+  max_side: 1280          # working resolution before per-model resize
+cache_size: 10000         # in-memory exact-SHA-256 decision cache
+
+# Stage 2 is skipped only if ALL these stage-1 signals are below their value (empty = always run).
+cascade:
+  clear_if_below:
+    falconsai.nsfw: 0.05
+    nudenet.FEMALE_BREAST_EXPOSED: 0.1
+    nudenet.FEMALE_GENITALIA_EXPOSED: 0.1
+    nudenet.MALE_GENITALIA_EXPOSED: 0.1
+    nudenet.BUTTOCKS_EXPOSED: 0.1
+    nudenet.ANUS_EXPOSED: 0.1
+
+# Decision rules. A signal >= reject -> REJECT, >= review -> REVIEW; the worst rule wins.
+# Rules for disabled models are skipped. `reason` codes are a stable API contract.
+# PROVISIONAL thresholds (prototype values) until tuned by eval.py on labeled data.
+policy:
+  rules:
+    - {signal: nudenet.FEMALE_GENITALIA_EXPOSED, reject: 0.5, review: 0.2, reason: EXPOSED_GENITALIA}
+    - {signal: nudenet.MALE_GENITALIA_EXPOSED,   reject: 0.5, review: 0.2, reason: EXPOSED_GENITALIA}
+    - {signal: nudenet.ANUS_EXPOSED,             reject: 0.5, review: 0.2, reason: EXPOSED_ANUS}
+    - {signal: nudenet.FEMALE_BREAST_EXPOSED,    reject: 0.5, review: 0.2, reason: EXPOSED_BREAST}
+    - {signal: nudenet.BUTTOCKS_EXPOSED,         reject: 0.5, review: 0.2, reason: EXPOSED_BUTTOCKS}
+    - {signal: freepik.high,                     reject: 0.8, review: 0.3, reason: EXPLICIT_CONTENT}
+    - {signal: freepik.medium+,                               review: 0.5, reason: SUGGESTIVE_CONTENT}
+    - {signal: falconsai.nsfw,                   reject: 0.98, review: 0.5, reason: EXPLICIT_CONTENT}
+  # Per-context overrides keyed by reason code (context = profile_photo | chat | post).
+  profiles:
+    profile_photo:
+      SUGGESTIVE_CONTENT: {review: 0.35}
+  # Detector boxes returned in `regions` (explainability only).
+  region_labels: [FEMALE_GENITALIA_EXPOSED, MALE_GENITALIA_EXPOSED, ANUS_EXPOSED, FEMALE_BREAST_EXPOSED, BUTTOCKS_EXPOSED]
