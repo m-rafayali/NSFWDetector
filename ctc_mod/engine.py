@@ -179,34 +179,37 @@ class Moderator:
         return not (clear and all(stage1_scores.get(k, 0.0) < v for k, v in clear.items()))
 
     def moderate(self, data: bytes, context: str | None = None) -> tuple[Decision, bool]:
-        """Returns (decision, cached). Raises ImageError on bad input."""
+        """Returns (decision, cached). Raises ImageError on bad input.
+        Model scores are cached by SHA-256; the (cheap) policy is re-applied per context."""
         sha = hashlib.sha256(data).hexdigest()
-        key = (sha, context, self.policy_version)
         with self._lock:
-            if key in self._cache:
-                self._cache.move_to_end(key)
-                return self._cache[key], True
-        frames = decode(data, self.limits)
-        ph = phash(frames[0])
-        scores, regions = self.score(frames, stage=1)
-        decision, reasons = self.decide(scores, context)
-        if self.needs_stage2(scores, decision):
+            entry = self._cache.get(sha)
+            if entry:
+                self._cache.move_to_end(sha)
+        cached, frames = entry is not None, None
+        if entry is None:
+            frames = decode(data, self.limits)
+            scores, regions = self.score(frames, stage=1)
+            entry = {"scores": scores, "regions": regions, "phash": phash(frames[0]), "stage2": False}
+        decision, reasons = self.decide(entry["scores"], context)
+        if not entry["stage2"] and self.needs_stage2(entry["scores"], decision):
+            frames = frames or decode(data, self.limits)
             s2, r2 = self.score(frames, stage=2)
-            scores |= s2
-            regions += r2
-            decision, reasons = self.decide(scores, context)
-        if decision == "APPROVE" and self._near_rejected(ph):
+            entry = {**entry, "scores": entry["scores"] | s2, "regions": entry["regions"] + r2, "stage2": True}
+            decision, reasons = self.decide(entry["scores"], context)
+            cached = False
+        if decision == "APPROVE" and self._near_rejected(entry["phash"]):
             decision, reasons = "REVIEW", ["NEAR_DUPLICATE_OF_REJECTED"]
-        regions = [r for r in regions if r["label"] in self.cfg["policy"].get("region_labels", [])]
-        d = Decision(decision, reasons, {k: round(v, 4) for k, v in sorted(scores.items())}, regions,
-                     self.models, self.policy_version, sha, ph)
+        regions = [r for r in entry["regions"] if r["label"] in self.cfg["policy"].get("region_labels", [])]
+        d = Decision(decision, reasons, {k: round(v, 4) for k, v in sorted(entry["scores"].items())}, regions,
+                     self.models, self.policy_version, sha, entry["phash"])
         with self._lock:
-            self._cache[key] = d
+            self._cache[sha] = entry
             if len(self._cache) > self.cfg.get("cache_size", 10000):
                 self._cache.popitem(last=False)
-            if decision == "REJECT":
-                self._rejected = np.append(self._rejected, np.uint64(int(ph, 16)))[-50000:]
-        return d, False
+            if decision == "REJECT" and not cached:
+                self._rejected = np.append(self._rejected, np.uint64(int(entry["phash"], 16)))[-50000:]
+        return d, cached
 
     def _near_rejected(self, ph: str, max_dist: int = 4) -> bool:
         """pHash is only used to escalate near-duplicates of rejected images, never to approve."""
