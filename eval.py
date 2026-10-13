@@ -28,19 +28,30 @@ RUNS = Path("runs")
 CLASSES = ["safe", "review", "reject"]
 PRED = ["APPROVE", "REVIEW", "REJECT"]
 # COST[true][pred]: a missed explicit image >> unnecessary review; false reject in between.
-COST = {"safe": [0, 1, 10], "review": [5, 0, 2], "reject": [100, 1, 0]}
+# Owner policy: ANY exposed nudity is REJECT (not REVIEW), so explicit->REVIEW costs 3, not 1.
+COST = {"safe": [0, 1, 10], "review": [5, 0, 2], "reject": [100, 3, 0]}
 # Bake-off variants: name -> (config model, overrides). Score keys are "<variant>.<signal>".
-VARIANTS = {
-    "nudenet": ("nudenet", {}),
-    "nudenet-rgb": ("nudenet", {"channels": "rgb"}),
-    "nudenet-640m": ("nudenet", {"file": "nudenet-640m", "size": 640}),
-    "freepik": ("freepik", {}),
+VARIANTS = {  # explicit file/channels so a config model can be matched to the variant that scored it
+    "nudenet": ("nudenet", {"file": "nudenet-320n", "channels": "rgb"}),
+    "nudenet-bgr": ("nudenet", {"file": "nudenet-320n", "channels": "bgr"}),  # what nudenet==3.4.2 feeds
+    "nudenet-640m": ("nudenet", {"file": "nudenet-640m", "size": 640, "channels": "bgr"}),
+    "freepik": ("freepik", {"file": "freepik"}),
     "freepik-int8": ("freepik", {"file": "freepik-int8"}),
-    "falconsai": ("falconsai", {}),
+    "falconsai": ("falconsai", {"file": "falconsai"}),
     "falconsai-int8": ("falconsai", {"file": "falconsai-int8"}),
-    "adamcodd": ("adamcodd", {}),
-    "marqo": ("marqo", {}),
+    "adamcodd": ("adamcodd", {"file": "adamcodd"}),
+    "marqo": ("marqo", {"file": "marqo"}),
 }
+
+
+def alias(cfg):
+    """Map config signal names ('freepik.high') to the scored variant ('freepik-int8.high')."""
+    m = {}
+    for name, mc in cfg["models"].items():
+        for v, (base, over) in VARIANTS.items():
+            if base == name and over["file"] == mc.get("file", name) and over.get("channels") == mc.get("channels"):
+                m[name] = v
+    return lambda sig: m.get(sig.split(".")[0], sig.split(".")[0]) + sig[len(sig.split(".")[0]):]
 EXPOSED = ["FEMALE_GENITALIA_EXPOSED", "MALE_GENITALIA_EXPOSED", "ANUS_EXPOSED", "FEMALE_BREAST_EXPOSED", "BUTTOCKS_EXPOSED"]
 GRID = [0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85,
         0.9, 0.95, 0.98, 0.99, 2.0]  # 2.0 = rule disabled
@@ -148,15 +159,16 @@ class RuleSim:
         stage = {n: m.get("stage", 1) for n, m in cfg["models"].items() if m.get("enabled")}
         n = len(recs)
         self.S = np.full((n, len(self.rules)), -1.0)
+        a = alias(cfg)
         clear = cfg.get("cascade", {}).get("clear_if_below", {})
         s2 = any(v == 2 for v in stage.values())
-        self.cleared = np.array([bool(clear) and all(r["scores"].get(k, 0) < v for k, v in clear.items())
+        self.cleared = np.array([bool(clear) and all(r["scores"].get(a(k), 0) < v for k, v in clear.items())
                                  for r in recs]) if s2 else np.ones(n, bool)
         for j, rule in enumerate(self.rules):
             model = rule["signal"].split(".")[0]
             if model not in stage:
                 continue  # disabled model -> rule inactive
-            col = np.array([r["scores"].get(rule["signal"], -1.0) for r in recs])
+            col = np.array([r["scores"].get(a(rule["signal"]), -1.0) for r in recs])
             if stage[model] == 2:
                 col = np.where(self.cleared, -1.0, col)  # stage 2 never ran for these
             self.S[:, j] = col
@@ -222,7 +234,7 @@ def summarize(pred, y, title):
 
 
 def cmd_report(args):
-    cfg = yaml.safe_load(open("config.yaml"))
+    cfg = yaml.safe_load(open(args.config))
     recs = load_records()
     y = np.array([CLASSES.index(r["label"]) for r in recs])
     dev = np.array([r["split"] == "dev" for r in recs])
@@ -288,8 +300,8 @@ def cmd_report(args):
     # 3) Final held-out test: only with --final, using the tuned thresholds.
     metrics = None
     if args.final and test.sum():
-        tp = sim.predict(rej, rev)
-        lines, metrics = summarize(tp[test], y[test], "HELD-OUT TEST (tuned thresholds, touched once)")
+        tp = sim.predict()  # the frozen thresholds in the config, not a fresh re-tune
+        lines, metrics = summarize(tp[test], y[test], "HELD-OUT TEST (frozen config thresholds, touched once)")
         out += ["## Final test", ""] + lines
         Path("eval_metrics.json").write_text(json.dumps(metrics, indent=2))
         eval_pred, eval_mask = tp, test
@@ -319,8 +331,10 @@ def cmd_report(args):
             top = sorted(((v, k) for k, v in recs[i]["scores"].items() if k.split(".")[0] in cfg["models"]), reverse=True)[:3]
             out.append(f"| {sev} | {recs[i]['path']} | {CLASSES[t]} | {PRED[p]} | "
                        + ", ".join(f"{k}={v:.2f}" for v, k in top) + " |")
-    Path("EVAL_REPORT.md").write_text("\n".join(out) + "\n")
-    print("wrote EVAL_REPORT.md")
+    if (RUNS / "robustness.md").exists():  # from `eval.py robust`
+        out += ["", "#" + (RUNS / "robustness.md").read_text()]
+    Path(args.out).write_text("\n".join(out) + "\n")
+    print(f"wrote {args.out}")
 
 
 def _stacker_cv(recs, y, dev, fold, cfg):
@@ -330,7 +344,8 @@ def _stacker_cv(recs, y, dev, fold, cfg):
     except ImportError:
         return None
     keys = sorted({r_["signal"] for r_ in cfg["policy"]["rules"] if r_["signal"].split(".")[0] in cfg["models"]})
-    X = np.array([[r["scores"].get(k, 0.0) for k in keys] for r in recs])
+    a = alias(cfg)
+    X = np.array([[r["scores"].get(a(k), 0.0) for k in keys] for r in recs])
     C = np.array([COST[c] for c in CLASSES])
     pred = np.zeros(len(recs), int)
     for k in range(5):
@@ -447,6 +462,8 @@ if __name__ == "__main__":
     s.add_argument("--data", default="labeled")
     r = sub.add_parser("report")
     r.add_argument("--final", action="store_true", help="evaluate the held-out test split (do this once)")
+    r.add_argument("--config", default="config.yaml", help="candidate config to evaluate (ensemble comparison)")
+    r.add_argument("--out", default="EVAL_REPORT.md")
     rb = sub.add_parser("robust")
     rb.add_argument("--limit", type=int, default=500)
     sub.add_parser("gate")

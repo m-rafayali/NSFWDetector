@@ -1,6 +1,6 @@
 # CTC moderation config: model registry + decision policy.
 # Bump policy_version on ANY change to thresholds/rules; it is returned with every decision.
-policy_version: "2026-10-12.1"
+policy_version: "2026-10-13.3"
 
 # Model registry. `export.py` writes models/<name>.onnx. Disable a model with enabled: false
 # (e.g. drop the AGPL region detector) and the pipeline keeps working without it.
@@ -8,6 +8,7 @@ models:
   freepik:      # Freepik/nsfw_image_detector, EVA02-base, MIT
     kind: classifier
     enabled: true
+    file: freepik-int8  # INT8: identical decisions to FP32 on all 149 dev images, ~0.4 GB less RAM
     stage: 2          # heavy (~0.4 s on M4): runs only when stage 1 is not clearly safe
     size: 448
     resize: squash
@@ -22,9 +23,10 @@ models:
     mean: [0.5, 0.5, 0.5]
     std: [0.5, 0.5, 0.5]
     labels: [nsfw, sfw]
-  falconsai:    # Falconsai/nsfw_image_detection, ViT-base-224, Apache-2.0
+  falconsai:    # Falconsai/nsfw_image_detection, ViT-base-224, Apache-2.0. Cascade gate only (no rule)
     kind: classifier
     enabled: true
+    file: falconsai-int8
     stage: 1
     size: 224
     resize: squash
@@ -45,7 +47,8 @@ models:
     stage: 1
     size: 320
     file: nudenet-320n
-    channels: bgr     # what nudenet==3.4.2 actually feeds (its cvtColor+swapRB cancel out)
+    channels: rgb     # nudenet==3.4.2 itself feeds BGR (its cvtColor+swapRB cancel out); RGB scored
+                      # slightly better in the bake-off (AUC 0.953 vs 0.948, within noise)
 
 limits:
   max_bytes: 15000000     # 15 MB upload cap
@@ -55,31 +58,36 @@ limits:
 cache_size: 10000         # in-memory exact-SHA-256 decision cache
 
 # Stage 2 is skipped only if ALL these stage-1 signals are below their value (empty = always run).
+# Gate swept on dev only (2026-10-13): 0.3/0.2 had identical dev cost to 0.05/0.1 but sends 55% (not 72%)
+# of safe images to stage 2. Loosen further only after re-checking with eval.py.
 cascade:
   clear_if_below:
-    falconsai.nsfw: 0.05
-    nudenet.FEMALE_BREAST_EXPOSED: 0.1
-    nudenet.FEMALE_GENITALIA_EXPOSED: 0.1
-    nudenet.MALE_GENITALIA_EXPOSED: 0.1
-    nudenet.BUTTOCKS_EXPOSED: 0.1
-    nudenet.ANUS_EXPOSED: 0.1
+    falconsai.nsfw: 0.3
+    nudenet.FEMALE_BREAST_EXPOSED: 0.2
+    nudenet.FEMALE_GENITALIA_EXPOSED: 0.2
+    nudenet.MALE_GENITALIA_EXPOSED: 0.2
+    nudenet.BUTTOCKS_EXPOSED: 0.2
+    nudenet.ANUS_EXPOSED: 0.2
 
+# CTC POLICY (owner-confirmed 2026-10-13):
+#   REJECT : ANY exposed nudity, however small (genitals, anus, female nipple/areola/breast, bare buttocks),
+#            sexual acts, sex toys, explicit drawn/AI content.
+#   REVIEW : breastfeeding, thong / extra-revealing swimwear, other borderline cases.
+#   APPROVE: normal bikini, swimwear, lingerie, shirtless men, everyday photos.
 # Decision rules. A signal >= reject -> REJECT, >= review -> REVIEW; the worst rule wins.
 # Rules for disabled models are skipped. `reason` codes are a stable API contract.
-# PROVISIONAL thresholds (prototype values) until tuned by eval.py on labeled data.
+# Thresholds: 5-fold-CV-tuned on 149 dev images (2026-10-13, eval.py, candidate "C"). Small data: re-tune
+# as labeled data grows. Low review thresholds are deliberate (images there were mostly explicit/borderline).
 policy:
   rules:
-    - {signal: nudenet.FEMALE_GENITALIA_EXPOSED, reject: 0.5, review: 0.2, reason: EXPOSED_GENITALIA}
-    - {signal: nudenet.MALE_GENITALIA_EXPOSED,   reject: 0.5, review: 0.2, reason: EXPOSED_GENITALIA}
-    - {signal: nudenet.ANUS_EXPOSED,             reject: 0.5, review: 0.2, reason: EXPOSED_ANUS}
-    - {signal: nudenet.FEMALE_BREAST_EXPOSED,    reject: 0.5, review: 0.2, reason: EXPOSED_BREAST}
-    - {signal: nudenet.BUTTOCKS_EXPOSED,         reject: 0.5, review: 0.2, reason: EXPOSED_BUTTOCKS}
-    - {signal: freepik.high,                     reject: 0.8, review: 0.3, reason: EXPLICIT_CONTENT}
-    - {signal: freepik.medium+,                               review: 0.5, reason: SUGGESTIVE_CONTENT}
-    - {signal: falconsai.nsfw,                   reject: 0.98, review: 0.5, reason: EXPLICIT_CONTENT}
-  # Per-context overrides keyed by reason code (context = profile_photo | chat | post).
-  profiles:
-    profile_photo:
-      SUGGESTIVE_CONTENT: {review: 0.35}
+    - {signal: nudenet.FEMALE_GENITALIA_EXPOSED, reject: 0.5,  review: 0.2,  reason: EXPOSED_GENITALIA}
+    - {signal: nudenet.MALE_GENITALIA_EXPOSED,   reject: 0.5,  review: 0.02, reason: EXPOSED_GENITALIA}
+    - {signal: nudenet.ANUS_EXPOSED,             reject: 0.5,  review: 0.2,  reason: EXPOSED_ANUS}
+    - {signal: nudenet.FEMALE_BREAST_EXPOSED,    reject: 0.75, review: 0.3,  reason: EXPOSED_BREAST}
+    - {signal: nudenet.BUTTOCKS_EXPOSED,         reject: 0.8,  review: 0.8,  reason: EXPOSED_BUTTOCKS}
+    - {signal: freepik.high,                     reject: 0.98, review: 0.02, reason: EXPLICIT_CONTENT}
+  # Per-context overrides keyed by reason code (context = profile_photo | chat | post), e.g.
+  #   profile_photo: {EXPLICIT_CONTENT: {review: 0.01}}
+  profiles: {}
   # Detector boxes returned in `regions` (explainability only).
   region_labels: [FEMALE_GENITALIA_EXPOSED, MALE_GENITALIA_EXPOSED, ANUS_EXPOSED, FEMALE_BREAST_EXPOSED, BUTTOCKS_EXPOSED]

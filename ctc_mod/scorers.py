@@ -34,6 +34,7 @@ def _session(path: Path) -> tuple[ort.InferenceSession, str]:
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = int(os.environ.get("CTC_ORT_THREADS", "0"))  # 0 = all cores
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    opts.enable_cpu_mem_arena = False  # arena kept ~0.4 GB extra resident; t3.small has 2 GiB
     sess = ort.InferenceSession(str(path), opts, providers=["CPUExecutionProvider"])
     return sess, hashlib.sha256(path.read_bytes()).hexdigest()[:12]
 

@@ -1,0 +1,30 @@
+# Podman: `podman-compose up -d --build`. Image names are fully qualified (Podman doesn't assume docker.io).
+services:
+  api:
+    build: {context: ., dockerfile: Containerfile}
+    image: localhost/ctc-mod:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./models:/models:ro
+      - ./keys.yaml:/run/keys.yaml:ro
+      - ctc_data:/data          # named volume: no host-UID mapping issues (rootless or rootful)
+    expose: ["8000"]
+    mem_limit: 1200m            # measured ~0.47 GiB under burst (INT8 models); t3.small has 2 GiB
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz')"]
+      interval: 15s
+      timeout: 3s
+      start_period: 60s
+  caddy:
+    image: docker.io/library/caddy:2.10.2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment: [CTC_DOMAIN]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [api]
+volumes:
+  ctc_data: {}
+  caddy_data: {}

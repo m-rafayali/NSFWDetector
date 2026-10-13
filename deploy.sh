@@ -6,6 +6,8 @@ set -euo pipefail
 HOST=${1:?usage: ./deploy.sh user@host}
 uv run pytest -q
 rsync -az --delete --exclude .git --exclude .venv --exclude data --exclude runs --exclude labeled \
-  --exclude keys.yaml --exclude .env --exclude '*-int8.onnx' --exclude 'adamcodd*' --exclude 'marqo*' \
-  --exclude 'nudenet-640m*' ./ "$HOST:ctc/"
-ssh "$HOST" 'cd ctc && test -f .env && test -f keys.yaml && docker compose up -d --build && sleep 5 && docker compose ps'
+  --exclude keys.yaml --exclude .env --exclude models ./ "$HOST:ctc/"
+# only the weights config.yaml enables (~0.2 GB)
+uv run python -c "import yaml; [print(m.get('file', n) + '.onnx') for n, m in yaml.safe_load(open('config.yaml'))['models'].items() if m.get('enabled')]" > /tmp/ctc-models.txt
+rsync -az --delete --files-from=/tmp/ctc-models.txt models/ "$HOST:ctc/models/"
+ssh "$HOST" 'cd ctc && test -f .env && test -f keys.yaml && podman-compose up -d --build && sleep 5 && podman ps'

@@ -41,6 +41,10 @@ IMAGES = _jpegs()
 class Uploader(HttpUser):
     wait_time = constant(0)
 
+    def on_start(self):
+        if os.environ.get("CTC_INSECURE") == "1":  # local Caddy test cert only; never against production
+            self.client.verify = False
+
     @task
     def moderate(self):
         data = random.choice(IMAGES) + os.urandom(16)  # bytes after JPEG EOI: decodes the same, new SHA
