@@ -1,32 +1,24 @@
 # Evaluation report
 
-policy_version `2026-10-13.3` · generated 2026-10-13 10:46 · 185 images (149 dev / 36 test)
+policy_version `2026-10-13.3` · generated 2026-10-13 12:45 · 185 images (149 dev / 36 test)
 
-All numbers come from `eval.py` on our labeled set. Rates use 95% Wilson intervals; cost uses a 1000x percentile bootstrap. Cost matrix (true→pred A/RV/RJ): {'safe': [0, 1, 10], 'review': [5, 0, 2], 'reject': [100, 3, 0]}.
+All numbers come from `eval.py` on our labeled set. Rates use 95% Wilson intervals; cost uses a 1000x percentile bootstrap. Cost matrix (true→pred APPROVE/REVIEW/REJECT): {'safe': [0, 1, 10], 'review': [5, 0, 2], 'reject': [100, 3, 0]}.
 
-## Per-model bake-off (dev split, reject vs safe)
+## Signals (dev, explicit vs safe)
 
-| signal | ROC AUC [95% CI] | recall@1% FPR | p50 ms | p95 ms |
-|---|---|---|---|---|
-| adamcodd.nsfw | 0.801 [0.710–0.873] | 31.4% | 109 | 140 |
-| falconsai-int8.nsfw | 0.920 [0.868–0.958] | 70.0% | 31 | 35 |
-| falconsai.nsfw | 0.926 [0.877–0.964] | 70.0% | 36 | 42 |
-| freepik-int8.high | 0.975 [0.939–0.997] | 88.6% | 299 | 345 |
-| freepik-int8.medium+ | 0.965 [0.927–0.992] | 80.0% | 299 | 345 |
-| freepik-int8.nsfw | 0.929 [0.871–0.971] | 0.0% | 299 | 345 |
-| freepik.high | 0.975 [0.939–0.997] | 88.6% | 305 | 337 |
-| freepik.medium+ | 0.960 [0.917–0.993] | 75.7% | 305 | 337 |
-| freepik.nsfw | 0.929 [0.869–0.971] | 0.0% | 305 | 337 |
-| marqo.nsfw | 0.856 [0.777–0.916] | 15.7% | 20 | 23 |
-| nudenet-640m.max_exposed | 0.957 [0.909–0.985] | 70.0% | 96 | 110 |
-| nudenet-bgr.max_exposed | 0.948 [0.901–0.979] | 68.6% | 9 | 11 |
-| nudenet.max_exposed | 0.953 [0.905–0.982] | 74.3% | 9 | 12 |
+| signal | ROC AUC [95% CI] | recall at 1% false positives |
+|---|---|---|
+| freepik.high | 0.975 [0.939–0.997] | 88.6% |
+| nudenet.ANUS_EXPOSED | 0.844 [0.762–0.902] | 11.4% |
+| nudenet.BUTTOCKS_EXPOSED | 0.628 [0.521–0.725] | 2.9% |
+| nudenet.FEMALE_BREAST_EXPOSED | 0.899 [0.828–0.958] | 77.1% |
+| nudenet.FEMALE_GENITALIA_EXPOSED | 0.896 [0.831–0.943] | 68.6% |
+| nudenet.MALE_GENITALIA_EXPOSED | 0.796 [0.714–0.866] | 30.0% |
+| nudenet.max_exposed | 0.953 [0.905–0.982] | 74.3% |
 
-Latency = per-model time on this machine incl. preprocessing, single process.
+## Decisions
 
-## Ensemble decisions
-
-### Current config thresholds (dev, untuned)
+### Current config thresholds (dev)
 
 n = 149  (safe: 65, review: 14, reject: 70)
 
@@ -49,7 +41,7 @@ n = 149  (safe: 65, review: 14, reject: 70)
 
 > **Too small:** 70 explicit images. Showing ≤1% explicit auto-approval at 95% confidence needs ≥300 with zero misses. The upper CI bound above is the honest number.
 
-### Tuned rules, 5-fold cross-validated (dev)
+### Re-tuned thresholds, 5-fold cross-validated (dev)
 
 n = 149  (safe: 65, review: 14, reject: 70)
 
@@ -72,36 +64,11 @@ n = 149  (safe: 65, review: 14, reject: 70)
 
 > **Too small:** 70 explicit images. Showing ≤1% explicit auto-approval at 95% confidence needs ≥300 with zero misses. The upper CI bound above is the honest number.
 
-### Logistic-regression stacker, 5-fold CV (dev)
-
-n = 149  (safe: 65, review: 14, reject: 70)
-
-| true \ pred | APPROVE | REVIEW | REJECT |
-|---|---|---|---|
-| safe | 0 | 64 | 1 |
-| review | 0 | 12 | 2 |
-| reject | 0 | 8 | 62 |
-
-| metric | value [95% CI] |
-|---|---|
-| explicit_auto_approved | 0.0% [0.0–5.2] |
-| explicit_caught_auto | 88.6% [79.0–94.1] |
-| safe_auto_rejected | 1.5% [0.3–8.2] |
-| safe_sent_to_review | 98.5% [91.8–99.7] |
-| borderline_auto_approved | 0.0% [0.0–21.5] |
-| review_rate_this_mix | 56.4% [48.4–64.1] |
-| reject_precision | 95.4% [87.3–98.4] |
-| mean cost / image | 0.685 [0.544–0.872] (bootstrap) |
-
-> **Too small:** 70 explicit images. Showing ≤1% explicit auto-approval at 95% confidence needs ≥300 with zero misses. The upper CI bound above is the honest number.
-
-Stacker **beats** tuned rules on CV cost (0.685 vs 1.054). Only adopt it if it wins clearly (outside bootstrap noise).
-
-Suggested thresholds (tuned on all dev) written to `runs/tuned_rules.yaml`. Copy into config.yaml and bump `policy_version` by hand after review.
+Suggested thresholds (tuned on all dev) are in `runs/tuned_rules.yaml`. Adopt them only if the CV row beats the current row; copy into config.yaml and bump `policy_version`.
 
 ## Final test
 
-### HELD-OUT TEST (frozen config thresholds, touched once)
+### HELD-OUT TEST (frozen config thresholds)
 
 n = 36  (safe: 17, review: 9, reject: 10)
 
@@ -124,18 +91,6 @@ n = 36  (safe: 17, review: 9, reject: 10)
 
 > **Too small:** 10 explicit images. Showing ≤1% explicit auto-approval at 95% confidence needs ≥300 with zero misses. The upper CI bound above is the honest number.
 
-## Edge cases
-
-| class/edge | n | auto-approved | auto-rejected | review |
-|---|---|---|---|---|
-
-## Calibration (dev): predicted vs observed explicit rate
-
-| signal | bins (mean score → observed explicit rate, n) |
-|---|---|
-| freepik.high | 0.01→0.06 (n=66); 0.20→0.67 (n=6); 0.70→1.00 (n=1); 0.76→1.00 (n=2); 0.99→0.98 (n=60) |
-| falconsai.nsfw | 0.01→0.10 (n=40); 0.18→0.20 (n=10); 0.40→0.33 (n=3); 0.69→0.00 (n=1); 0.77→0.17 (n=6); 1.00→0.83 (n=75) |
-| nudenet.max_exposed | 0.03→0.03 (n=36); 0.19→0.12 (n=16); 0.42→0.38 (n=13); 0.60→0.58 (n=12); 0.82→0.95 (n=58) |
 
 ## Misclassified files
 
@@ -143,13 +98,13 @@ Severe = explicit approved or safe rejected.
 
 | severity | file | true | pred | top signals |
 |---|---|---|---|---|
-| SEVERE | ../labeled/reject/images (48)213.jpeg | reject | APPROVE | freepik.nsfw=1.00, freepik.low+=1.00, falconsai.nsfw=1.00 |
-| minor | ../labeled/review/images (37).jpeg | review | APPROVE | falconsai.normal=1.00, freepik.neutral=0.96, marqo.sfw=0.95 |
-| minor | ../labeled/review/images (5).jpeg | review | APPROVE | falconsai.normal=0.98, marqo.sfw=0.93, adamcodd.nsfw=0.88 |
-| minor | ../labeled/review/images (7).jpeg | review | REJECT | freepik.nsfw=1.00, freepik.low+=1.00, freepik.medium+=1.00 |
-| minor | ../labeled/safe/images (20)213.jpeg | safe | REVIEW | freepik.nsfw=1.00, freepik.low+=1.00, freepik.medium+=1.00 |
-| minor | ../labeled/safe/images (21).jpeg | safe | REVIEW | falconsai.normal=1.00, adamcodd.sfw=0.99, freepik.neutral=0.87 |
-| minor | ../labeled/safe/images (37).jpeg | safe | REVIEW | falconsai.normal=1.00, adamcodd.sfw=0.92, freepik.nsfw=0.91 |
+| SEVERE | ../labeled/reject/images (48)213.jpeg | reject | APPROVE | nudenet.FEMALE_BREAST_EXPOSED=0.02, freepik.high=0.00, nudenet.FEMALE_GENITALIA_EXPOSED=0.00 |
+| minor | ../labeled/review/images (37).jpeg | review | APPROVE | nudenet.FEMALE_BREAST_EXPOSED=0.00, freepik.high=0.00, nudenet.FEMALE_GENITALIA_EXPOSED=0.00 |
+| minor | ../labeled/review/images (5).jpeg | review | APPROVE | freepik.high=0.08, nudenet.FEMALE_BREAST_EXPOSED=0.05, nudenet.FEMALE_GENITALIA_EXPOSED=0.00 |
+| minor | ../labeled/review/images (7).jpeg | review | REJECT | nudenet.FEMALE_BREAST_EXPOSED=0.77, nudenet.BUTTOCKS_EXPOSED=0.34, freepik.high=0.27 |
+| minor | ../labeled/safe/images (20)213.jpeg | safe | REVIEW | nudenet.FEMALE_BREAST_EXPOSED=0.63, freepik.high=0.49, nudenet.FEMALE_GENITALIA_EXPOSED=0.02 |
+| minor | ../labeled/safe/images (21).jpeg | safe | REVIEW | nudenet.FEMALE_BREAST_EXPOSED=0.42, nudenet.MALE_GENITALIA_EXPOSED=0.04, freepik.high=0.01 |
+| minor | ../labeled/safe/images (37).jpeg | safe | REVIEW | nudenet.FEMALE_BREAST_EXPOSED=0.59, freepik.high=0.06, nudenet.FEMALE_GENITALIA_EXPOSED=0.02 |
 
 ## Robustness (dev reject+review images, production pipeline)
 

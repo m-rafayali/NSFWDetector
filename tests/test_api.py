@@ -54,8 +54,7 @@ def test_moderate_and_error_format(api):
     assert r.status_code == 415
     r = post(c, img_bytes(), context="bogus")
     assert r.status_code == 422 and r.json()["error"]["code"] == "VALIDATION_ERROR"
-    assert c.post("/v1/moderate/image", data={"image_url": "http://169.254.169.254/"},
-                  headers={"Authorization": CLIENT_KEY}).json()["error"]["code"] == "URL_INPUT_DISABLED"
+    assert c.post("/v1/moderate/image", data={"context": "chat"}, headers={"Authorization": CLIENT_KEY}).status_code == 422
 
 
 def test_idempotency_batch_and_rate_limit(api):
@@ -95,7 +94,7 @@ def test_review_queue_flow(api):
     assert r.status_code == 200
     assert c.get("/v1/review", headers=adm).json() == []
     assert c.get(f"/v1/review/{rid}", headers=adm).json()["human_decision"] == "REJECT"
-    fb = {"request_id": rid, "human_decision": "APPROVE"}
+    fb = {"request_id": rid, "decision": "APPROVE"}
     assert c.post("/v1/feedback", json=fb, headers={"Authorization": CLIENT_KEY}).status_code == 403
     assert c.post("/v1/feedback", json={**fb, "request_id": "nope"}, headers=adm).status_code == 404
     assert c.get("/v1/review", headers={"Authorization": tok("x", "Admin")}).status_code == 200  # case-insensitive
@@ -109,9 +108,3 @@ def test_health_and_removed_endpoints(api):
     api.S["ready"] = False
     assert c.get("/health").status_code == 503
     assert post(c, img_bytes()).json()["error"]["code"] == "NOT_READY"
-
-
-def test_ssrf_guard_blocks_private_addresses(api):
-    for host in ("127.0.0.1", "10.0.0.5", "169.254.169.254", "localhost", "::1"):
-        with pytest.raises(api.ApiError):
-            api._safe_ip(host)

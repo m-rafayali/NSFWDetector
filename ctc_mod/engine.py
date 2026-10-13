@@ -121,12 +121,14 @@ class Decision:
 class Moderator:
     """Loads models once; thread-safe `moderate()` (onnxruntime releases the GIL)."""
 
-    def __init__(self, config_path: str | Path = "config.yaml", only: list[str] | None = None):
+    def __init__(self, config_path: str | Path = "config.yaml"):
         self.cfg = yaml.safe_load(Path(config_path).read_text())
         self.policy_version = self.cfg["policy_version"]
         self.limits = self.cfg["limits"]
-        self.scorers = scorers.load(self.cfg["models"], only)
+        self.scorers = scorers.load(self.cfg["models"])
         self.stage = {s.name: self.cfg["models"][s.name].get("stage", 1) for s in self.scorers}
+        # Signals returned to callers: only those the policy actually reads (rules + cascade gate).
+        self.used = {r["signal"] for r in self.cfg["policy"]["rules"]} | set(self.cfg.get("cascade", {}).get("clear_if_below", {}))
         self._cache: OrderedDict = OrderedDict()
         self._rejected = np.zeros(0, np.uint64)  # pHashes of rejected images
         self._lock = threading.Lock()
@@ -201,7 +203,7 @@ class Moderator:
         if decision == "APPROVE" and self._near_rejected(entry["phash"]):
             decision, reasons = "REVIEW", ["NEAR_DUPLICATE_OF_REJECTED"]
         regions = [r for r in entry["regions"] if r["label"] in self.cfg["policy"].get("region_labels", [])]
-        d = Decision(decision, reasons, {k: round(v, 4) for k, v in sorted(entry["scores"].items())}, regions,
+        d = Decision(decision, reasons, {k: round(v, 4) for k, v in sorted(entry["scores"].items()) if k in self.used}, regions,
                      self.models, self.policy_version, sha, entry["phash"])
         with self._lock:
             self._cache[sha] = entry

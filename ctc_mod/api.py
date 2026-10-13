@@ -1,18 +1,16 @@
 """FastAPI service. Run: uvicorn ctc_mod.api:app --host 0.0.0.0 --port 8000 (ONE worker; see README).
 
-Env: CTC_JWT_SECRET (required), CTC_RATE_PER_MIN, CTC_CONFIG, CTC_DB, CTC_SHADOW, CTC_KILL_SWITCH,
-     CTC_CONCURRENCY, CTC_QUEUE, CTC_TIMEOUT_S, CTC_ALLOW_URL, CTC_MODELS_DIR, CTC_ORT_THREADS.
+Env (.env is read automatically): CTC_JWT_SECRET (required), CTC_RATE_PER_MIN, CTC_SHADOW, CTC_KILL_SWITCH,
+     CTC_CONCURRENCY, CTC_QUEUE, CTC_TIMEOUT_S, CTC_CONFIG, CTC_DB, CTC_MODELS_DIR, CTC_ORT_THREADS.
 Auth: `Authorization: Bearer <JWT>`, HS256, `exp` required; caller id = `sub` or `id` (CTC app tokens use `id`);
       `role: admin` (any case) for /v1/review* and /v1/feedback.
-Dev token: CTC_JWT_SECRET=... python -m ctc_mod.api token <sub> [admin] [hours]
+Dev token: python -m ctc_mod.api token <sub> [admin] [hours]
 """
 import asyncio
 import hashlib
-import ipaddress
 import json
 import logging
 import os
-import socket
 import sqlite3
 import sys
 import threading
@@ -22,11 +20,9 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urljoin, urlparse
 
-import httpx
 import jwt
-from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -34,7 +30,6 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .engine import Decision, ImageError, Moderator
-
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -55,10 +50,9 @@ QUEUE = int(env("CTC_QUEUE", "16"))
 TIMEOUT_S = float(env("CTC_TIMEOUT_S", "10"))
 SHADOW = env("CTC_SHADOW", "0") == "1"
 KILL = env("CTC_KILL_SWITCH", "0") == "1"
-ALLOW_URL = env("CTC_ALLOW_URL", "0") == "1"
-BATCH_MAX = 8
 JWT_SECRET = env("CTC_JWT_SECRET", "")
 RATE_PER_MIN = int(env("CTC_RATE_PER_MIN", "600"))
+BATCH_MAX = 8
 
 log = logging.getLogger("ctc")
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
@@ -70,6 +64,10 @@ class ApiError(Exception):
 
 
 # ---------------------------------------------------------------- schemas
+Context = Literal["profile_photo", "chat", "post"]
+Verdict = Literal["APPROVE", "REVIEW", "REJECT"]
+
+
 class ModelInfo(BaseModel):
     name: str
     version: str
@@ -83,11 +81,11 @@ class Region(BaseModel):
 
 class ModerationResult(BaseModel):
     request_id: str
-    decision: Literal["APPROVE", "REVIEW", "REJECT"] = Field(description="What the app must enforce")
+    decision: Verdict = Field(description="What the app must enforce")
     enforced: bool = Field(description="False in shadow mode: decision is always APPROVE, see shadow_decision")
-    shadow_decision: Literal["APPROVE", "REVIEW", "REJECT"] | None = None
+    shadow_decision: Verdict | None = None
     reasons: list[str] = Field(description="Stable machine-readable reason codes, e.g. EXPOSED_GENITALIA")
-    scores: dict[str, float]
+    scores: dict[str, float] = Field(description="Signals the policy uses (debugging only; keys may change)")
     regions: list[Region] = []
     models: list[ModelInfo]
     policy_version: str
@@ -102,11 +100,14 @@ class BatchItem(BaseModel):
     error: dict | None = None
 
 
-class Feedback(BaseModel):
-    request_id: str
-    human_decision: Literal["APPROVE", "REJECT"]
+class HumanVerdict(BaseModel):
+    decision: Literal["APPROVE", "REJECT"]
     reviewer: str | None = Field(None, max_length=128)
     notes: str | None = Field(None, max_length=2000)
+
+
+class Feedback(HumanVerdict):
+    request_id: str
 
 
 class ReviewItem(BaseModel):
@@ -124,17 +125,12 @@ class ReviewItem(BaseModel):
     notes: str | None = None
 
 
-class ReviewResolve(BaseModel):
-    decision: Literal["APPROVE", "REJECT"]
-    reviewer: str | None = Field(None, max_length=128)
-    notes: str | None = Field(None, max_length=2000)
-
-
 # ---------------------------------------------------------------- storage (hashes + scores only, never images)
 class Store:
     def __init__(self, path: str):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        self.db.row_factory = sqlite3.Row
         self.lock = threading.Lock()
         self.db.executescript("""
             PRAGMA journal_mode=WAL;
@@ -147,13 +143,12 @@ class Store:
 
     def q(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
         with self.lock:
-            self.db.row_factory = sqlite3.Row
             return self.db.execute(sql, args).fetchall()
 
 
 # ---------------------------------------------------------------- auth + rate limit
 class RateLimiter:
-    """Token bucket per JWT `sub`; burst = one minute of quota. In-memory (single process)."""
+    """Token bucket per caller; burst = one minute of quota. In-memory (single process)."""
 
     def __init__(self, per_min: int):
         self.rate, self.buckets, self.lock = per_min / 60.0, {}, threading.Lock()
@@ -168,42 +163,12 @@ class RateLimiter:
             return ok
 
 
-# ---------------------------------------------------------------- app state
-@asynccontextmanager
-async def lifespan(_):
-    if len(JWT_SECRET) < 32:
-        log.warning(json.dumps({"event": "weak_or_missing_jwt_secret", "length": len(JWT_SECRET),
-                                "advice": "use >= 32 random chars, e.g. openssl rand -base64 48"}))
-    threading.Thread(target=_load, daemon=True).start()  # /health answers (503) while models load
-    yield
-
-
-app = FastAPI(title="CTC Image Moderation", version="1.0.0", lifespan=lifespan,
-              description="Decides APPROVE / REVIEW / REJECT for user-uploaded images. See INTEGRATION.md.")
-S: dict = {"ready": False}
-limiter = RateLimiter(RATE_PER_MIN)
-store = Store(env("CTC_DB", "data/ctc.db"))
-pool = ThreadPoolExecutor(max_workers=CONCURRENCY)
-slots = asyncio.Semaphore(CONCURRENCY)
-waiting = 0
-
-
-def _load():
-    m = Moderator(env("CTC_CONFIG", "config.yaml"))
-    m.warmup()
-    S["mod"], S["ready"] = m, True
-    log.info(json.dumps({"event": "ready", "models": m.models, "policy_version": m.policy_version,
-                         "shadow": SHADOW, "kill_switch": KILL}))
-
-
 BEARER = HTTPBearer(auto_error=False, description="JWT signed with CTC_JWT_SECRET (HS256). Swagger: Authorize.")
 
 
 def auth(role: str = "client"):
-    def dep(request: Request, cred: HTTPAuthorizationCredentials | None = Depends(BEARER)) -> dict:
+    def dep(cred: HTTPAuthorizationCredentials | None = Depends(BEARER)) -> str:
         if not cred or not JWT_SECRET:
-            print(JWT_SECRET)
-            print(cred)
             raise ApiError(401, "UNAUTHORIZED", "Missing bearer token")
         token = cred.credentials.removeprefix("Bearer ").strip()  # tolerate "Bearer Bearer <jwt>" (Swagger paste)
         try:
@@ -219,24 +184,45 @@ def auth(role: str = "client"):
             raise ApiError(403, "FORBIDDEN", "This endpoint needs a token with role=admin")
         if not limiter.allow(sub):
             raise ApiError(429, "RATE_LIMITED", "Rate limit exceeded", {"Retry-After": "5"})
-        request.state.key_id = sub
-        return {"id": sub, "role": claims.get("role")}
+        return sub
     return dep
 
 
-# ---------------------------------------------------------------- errors
+# ---------------------------------------------------------------- app
+def _load():
+    m = Moderator(env("CTC_CONFIG", "config.yaml"))
+    m.warmup()
+    S["mod"], S["ready"] = m, True
+    log.info(json.dumps({"event": "ready", "models": m.models, "policy_version": m.policy_version,
+                         "shadow": SHADOW, "kill_switch": KILL}))
+
+
+@asynccontextmanager
+async def lifespan(_):
+    if len(JWT_SECRET) < 32:
+        log.warning(json.dumps({"event": "weak_or_missing_jwt_secret", "length": len(JWT_SECRET)}))
+    threading.Thread(target=_load, daemon=True).start()  # /health answers (503) while models load
+    yield
+
+
+app = FastAPI(title="CTC Image Moderation", version="1.0.0", lifespan=lifespan,
+              description="Decides APPROVE / REVIEW / REJECT for user-uploaded images. See INTEGRATION.md.")
+S: dict = {"ready": False}
+limiter = RateLimiter(RATE_PER_MIN)
+store = Store(env("CTC_DB", "data/ctc.db"))
+pool = ThreadPoolExecutor(max_workers=CONCURRENCY)
+slots = asyncio.Semaphore(CONCURRENCY)
+waiting = 0
+
+
 def _err(status, code, message, headers=None):
     return JSONResponse({"error": {"code": code, "message": message}}, status, headers=headers)
 
 
 @app.exception_handler(ApiError)
-async def _api_err(_, e: ApiError):
-    return _err(e.status, e.code, e.message, e.headers)
-
-
 @app.exception_handler(ImageError)
-async def _img_err(_, e: ImageError):
-    return _err(e.status, e.code, e.message)
+async def _api_err(_, e):
+    return _err(e.status, e.code, e.message, getattr(e, "headers", None))
 
 
 @app.exception_handler(RequestValidationError)
@@ -247,14 +233,6 @@ async def _val_err(_, e: RequestValidationError):
 @app.exception_handler(StarletteHTTPException)
 async def _http_err(_, e: StarletteHTTPException):
     return _err(e.status_code, {404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED"}.get(e.status_code, "HTTP_ERROR"), str(e.detail))
-
-
-@app.middleware("http")
-async def body_limit(request: Request, call_next):
-    cl = request.headers.get("content-length")
-    if cl and cl.isdigit() and int(cl) > 20_000_000 * (BATCH_MAX if request.url.path.endswith("/batch") else 1):
-        return _err(413, "FILE_TOO_LARGE", "Request body too large")
-    return await call_next(request)
 
 
 # ---------------------------------------------------------------- core
@@ -277,10 +255,9 @@ async def _infer(data: bytes, context: str | None) -> tuple[Decision, bool]:
         slots.release()
 
 
-def _replay(k: dict, idem: str, sha: str) -> ModerationResult | None:
-    """Stored response for a reused idempotency key; refuse if the key was used for a different image
-    (otherwise e.g. Swagger's placeholder key "string" would replay one image's decision for all)."""
-    row = store.q("SELECT response, sha256 FROM decisions WHERE key_id=? AND idem=?", (k["id"], idem))
+def _replay(sub: str, idem: str, sha: str) -> ModerationResult | None:
+    """Stored response for a reused idempotency key; refuse if the key was used for a different image."""
+    row = store.q("SELECT response, sha256 FROM decisions WHERE key_id=? AND idem=?", (sub, idem))
     if not row:
         return None
     if row[0]["sha256"] != sha:
@@ -288,33 +265,33 @@ def _replay(k: dict, idem: str, sha: str) -> ModerationResult | None:
     return ModerationResult(**{**json.loads(row[0]["response"]), "cached": True})
 
 
-async def _moderate(data: bytes, k: dict, context, user_id, idem) -> ModerationResult:
+async def _moderate(data: bytes, sub: str, context, user_id, idem) -> ModerationResult:
     sha = hashlib.sha256(data).hexdigest()
-    if idem and (prev := _replay(k, idem, sha)):
+    if idem and (prev := _replay(sub, idem, sha)):
         return prev
     t0 = time.perf_counter()
-    rid = uuid.uuid4().hex
     if KILL:  # skip models entirely; everything goes to humans
-        d, cached = Decision("REVIEW", ["KILL_SWITCH"], {}, [], [], S["mod"].policy_version if S["ready"] else "", sha, ""), False
+        d = Decision("REVIEW", ["KILL_SWITCH"], {}, [], [], S["mod"].policy_version if S["ready"] else "", sha, "")
+        cached = False
     else:
         d, cached = await _infer(data, context)
-    real = d.decision
+    rid = uuid.uuid4().hex
     res = ModerationResult(
-        request_id=rid, decision="APPROVE" if SHADOW else real, enforced=not SHADOW,
-        shadow_decision=real if SHADOW else None, reasons=d.reasons, scores=d.scores, regions=d.regions,
-        models=d.models, policy_version=d.policy_version, image_sha256=d.image_sha256,
+        request_id=rid, decision="APPROVE" if SHADOW else d.decision, enforced=not SHADOW,
+        shadow_decision=d.decision if SHADOW else None, reasons=d.reasons, scores=d.scores, regions=d.regions,
+        models=d.models, policy_version=d.policy_version, image_sha256=sha,
         latency_ms=round((time.perf_counter() - t0) * 1000, 1), cached=cached)
     try:
         store.q("INSERT INTO decisions(request_id, created_at, key_id, idem, user_id, context, decision, shadow, reasons,"
                 " scores, sha256, policy_version, response, review_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (rid, time.time(), k["id"], idem, user_id, context, real, int(SHADOW), json.dumps(d.reasons),
-                 json.dumps(d.scores), d.image_sha256, d.policy_version, res.model_dump_json(),
-                 "pending" if real == "REVIEW" else None))
+                (rid, time.time(), sub, idem, user_id, context, d.decision, int(SHADOW), json.dumps(d.reasons),
+                 json.dumps(d.scores), sha, d.policy_version, res.model_dump_json(),
+                 "pending" if d.decision == "REVIEW" else None))
     except sqlite3.IntegrityError:  # concurrent duplicate idempotency key: return the stored one
-        return _replay(k, idem, sha)
-    log.info(json.dumps({"event": "moderated", "request_id": rid, "key_id": k["id"], "user_id": user_id,
-                         "context": context, "decision": real, "enforced": not SHADOW, "reasons": d.reasons,
-                         "sha256": d.image_sha256, "phash": d.phash, "latency_ms": res.latency_ms, "cached": cached}))
+        return _replay(sub, idem, sha)
+    log.info(json.dumps({"event": "moderated", "request_id": rid, "caller": sub, "user_id": user_id,
+                         "context": context, "decision": d.decision, "enforced": not SHADOW, "reasons": d.reasons,
+                         "sha256": sha, "phash": d.phash, "latency_ms": res.latency_ms, "cached": cached}))
     return res
 
 
@@ -328,109 +305,12 @@ async def _read(file: UploadFile) -> bytes:
     return data
 
 
-def _safe_ip(host: str) -> str:
-    """Resolve and refuse anything that is not a public unicast address."""
-    try:
-        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        raise ApiError(400, "URL_NOT_ALLOWED", "Host does not resolve")
-    ips = {i[4][0] for i in infos}
-    for ip in ips:
-        a = ipaddress.ip_address(ip)
-        if not a.is_global or a.is_multicast:
-            raise ApiError(400, "URL_NOT_ALLOWED", "URL resolves to a non-public address")
-    return sorted(ips)[0]
-
-
-async def _fetch(url: str) -> bytes:
-    """SSRF-hardened fetch: http(s) on 80/443 only, public IPs only (pinned, so no DNS rebinding),
-    max 2 redirects (each re-validated), size and time capped."""
-    limit = S["mod"].limits["max_bytes"] if S["ready"] else 15_000_000
-    async with httpx.AsyncClient(timeout=5, follow_redirects=False, trust_env=False) as c:
-        for _ in range(3):
-            u = urlparse(url)
-            if u.scheme not in ("http", "https") or not u.hostname or u.port not in (None, 80, 443) or u.username:
-                raise ApiError(400, "URL_NOT_ALLOWED", "Only public http(s) URLs on ports 80/443")
-            ip = _safe_ip(u.hostname)
-            pinned = u._replace(netloc=(f"[{ip}]" if ":" in ip else ip)).geturl()
-            async with c.stream("GET", pinned, headers={"Host": u.hostname},
-                                extensions={"sni_hostname": u.hostname}) as r:
-                if r.is_redirect:
-                    url = urljoin(url, r.headers.get("location", ""))
-                    continue
-                if r.status_code != 200:
-                    raise ApiError(400, "URL_FETCH_FAILED", f"URL returned HTTP {r.status_code}")
-                buf = bytearray()
-                async for chunk in r.aiter_bytes():
-                    buf += chunk
-                    if len(buf) > limit:
-                        raise ApiError(413, "FILE_TOO_LARGE", f"File exceeds {limit} bytes")
-                return bytes(buf)
-    raise ApiError(400, "URL_FETCH_FAILED", "Too many redirects")
-
-
-Context = Literal["profile_photo", "chat", "post"]
-
-
-# ---------------------------------------------------------------- routes
-@app.post("/v1/moderate/image", response_model=ModerationResult, tags=["moderation"],
-          responses={s: {"description": d} for s, d in {400: "Bad input", 401: "Bad or expired token", 413: "Too large",
-                     409: "idempotency_key reused for another image", 415: "Unsupported format", 422: "Undecodable/invalid", 429: "Rate limited", 503: "Busy or loading"}.items()})
-async def moderate_image(file: UploadFile | None = File(None, description="JPEG, PNG, GIF, WebP or HEIC/HEIF"),
-                         image_url: str | None = Form(None, description="Only if enabled server-side (CTC_ALLOW_URL=1)",
-                                                      json_schema_extra={"example": ""}),
-                         context: Context | None = Form(None),
-                         user_id: str | None = Form(None, max_length=128, json_schema_extra={"example": ""}),
-                         idempotency_key: str | None = Form(None, max_length=128, json_schema_extra={"example": ""},
-                                                            description="One unique key per upload (e.g. upload id)"),
-                         k: dict = Depends(auth())):
-    image_url, user_id, idempotency_key = image_url or None, user_id or None, idempotency_key or None  # "" = unset
-    if file is not None:
-        data = await _read(file)
-    elif image_url:
-        if not ALLOW_URL:
-            raise ApiError(400, "URL_INPUT_DISABLED", "image_url input is disabled; upload the file")
-        data = await _fetch(image_url)
-    else:
-        raise ApiError(400, "NO_IMAGE", "Send a `file` field")
-    return await _moderate(data, k, context, user_id, idempotency_key)
-
-
-@app.post("/v1/moderate/image/batch", response_model=list[BatchItem], tags=["moderation"])
-async def moderate_batch(files: list[UploadFile] = File(..., description=f"Up to {BATCH_MAX} images"),
-                         context: Context | None = Form(None),
-                         user_id: str | None = Form(None, max_length=128, json_schema_extra={"example": ""}),
-                         k: dict = Depends(auth())):
-    user_id = user_id or None
-    if len(files) > BATCH_MAX:
-        raise ApiError(400, "BATCH_TOO_LARGE", f"At most {BATCH_MAX} files per batch")
-    if not limiter.allow(k["id"], len(files) - 1):  # each image counts against the rate limit
-        raise ApiError(429, "RATE_LIMITED", "Rate limit exceeded", {"Retry-After": "5"})
-
-    async def one(f: UploadFile) -> BatchItem:
-        try:
-            return BatchItem(filename=f.filename, result=await _moderate(await _read(f), k, context, user_id, None))
-        except (ApiError, ImageError) as e:
-            return BatchItem(filename=f.filename, error={"code": e.code, "message": e.message})
-    return list(await asyncio.gather(*(one(f) for f in files)))
-
-
-@app.post("/v1/feedback", tags=["feedback"])
-async def feedback(fb: Feedback, k: dict = Depends(auth("admin"))):
-    """Moderator outcome for any decision (e.g. an appeal); used to retune thresholds. Admin only, so app users
-    can't inject fake verdicts into the tuning data."""
-    return _resolve(fb.request_id, fb.human_decision, fb.reviewer, fb.notes)
-
-
-def _resolve(rid, decision, reviewer, notes):
-    rows = store.q("SELECT review_status FROM decisions WHERE request_id=?", (rid,))
-    if not rows:
-        raise ApiError(404, "NOT_FOUND", "Unknown request_id")
+def _resolve(rid: str, v: HumanVerdict) -> dict:
     store.q("UPDATE decisions SET human_decision=?, reviewer=?, notes=?, reviewed_at=?, "
             "review_status=CASE WHEN review_status IS NULL THEN NULL ELSE 'resolved' END WHERE request_id=?",
-            (decision, reviewer, notes, time.time(), rid))
-    log.info(json.dumps({"event": "human_decision", "request_id": rid, "decision": decision, "reviewer": reviewer}))
-    return {"request_id": rid, "human_decision": decision, "status": "recorded"}
+            (v.decision, v.reviewer, v.notes, time.time(), rid))
+    log.info(json.dumps({"event": "human_decision", "request_id": rid, "decision": v.decision, "reviewer": v.reviewer}))
+    return {"request_id": rid, "human_decision": v.decision, "status": "recorded"}
 
 
 def _item(r) -> ReviewItem:
@@ -440,19 +320,71 @@ def _item(r) -> ReviewItem:
                       reviewer=r["reviewer"], notes=r["notes"])
 
 
-@app.get("/v1/review", response_model=list[ReviewItem], tags=["review queue (admin)"])
+def _review_row(rid: str):
+    rows = store.q("SELECT * FROM decisions WHERE request_id=? AND review_status IS NOT NULL", (rid,))
+    if not rows:
+        raise ApiError(404, "NOT_FOUND", "Unknown review item")
+    return rows[0]
+
+
+# ---------------------------------------------------------------- routes
+BLANK = {"example": ""}  # keeps Swagger from pre-filling optional fields with "string"
+ADMIN = Depends(auth("admin"))
+
+
+@app.post("/v1/moderate/image", response_model=ModerationResult, tags=["moderation"],
+          responses={s: {"description": d} for s, d in {
+              400: "Bad input", 401: "Bad or expired token", 409: "idempotency_key reused for another image",
+              413: "Too large", 415: "Unsupported format", 422: "Undecodable/invalid", 429: "Rate limited",
+              503: "Busy or loading"}.items()})
+async def moderate_image(file: UploadFile = File(..., description="JPEG, PNG, GIF, WebP or HEIC/HEIF"),
+                         context: Context | None = Form(None),
+                         user_id: str | None = Form(None, max_length=128, json_schema_extra=BLANK),
+                         idempotency_key: str | None = Form(None, max_length=128, json_schema_extra=BLANK,
+                                                            description="One unique key per upload (e.g. upload id)"),
+                         sub: str = Depends(auth())):
+    return await _moderate(await _read(file), sub, context, user_id or None, idempotency_key or None)
+
+
+@app.post("/v1/moderate/image/batch", response_model=list[BatchItem], tags=["moderation"])
+async def moderate_batch(files: list[UploadFile] = File(..., description=f"Up to {BATCH_MAX} images"),
+                         context: Context | None = Form(None),
+                         user_id: str | None = Form(None, max_length=128, json_schema_extra=BLANK),
+                         sub: str = Depends(auth())):
+    if len(files) > BATCH_MAX:
+        raise ApiError(400, "BATCH_TOO_LARGE", f"At most {BATCH_MAX} files per batch")
+    if not limiter.allow(sub, len(files) - 1):  # each image counts against the rate limit
+        raise ApiError(429, "RATE_LIMITED", "Rate limit exceeded", {"Retry-After": "5"})
+
+    async def one(f: UploadFile) -> BatchItem:
+        try:
+            return BatchItem(filename=f.filename, result=await _moderate(await _read(f), sub, context, user_id or None, None))
+        except (ApiError, ImageError) as e:
+            return BatchItem(filename=f.filename, error={"code": e.code, "message": e.message})
+    return list(await asyncio.gather(*(one(f) for f in files)))
+
+
+@app.post("/v1/feedback", tags=["feedback"], dependencies=[ADMIN])
+async def feedback(fb: Feedback):
+    """Moderator outcome for ANY decision (e.g. an appeal of a REJECT); used to retune thresholds."""
+    if not store.q("SELECT 1 FROM decisions WHERE request_id=?", (fb.request_id,)):
+        raise ApiError(404, "NOT_FOUND", "Unknown request_id")
+    return _resolve(fb.request_id, fb)
+
+
+@app.get("/v1/review", response_model=list[ReviewItem], tags=["review queue (admin)"], dependencies=[ADMIN])
 async def review_list(status: Literal["pending", "resolved"] = "pending", include_shadow: bool = False,
-                      before: float | None = None, limit: int = 50, k: dict = Depends(auth("admin"))):
-    """REVIEW items for the moderator dashboard, oldest first for pending. Images are NOT stored here:
-    look the image up in your app's storage by request_id (save it when you call /moderate)."""
+                      before: float | None = None, limit: int = 50):
+    """REVIEW items, oldest first when pending. Images are NOT stored here: show the image from your own
+    storage by request_id. Page with `before=<created_at of the last item>`."""
     rows = store.q("SELECT * FROM decisions WHERE review_status=? AND (?=1 OR shadow=0) AND (? IS NULL OR created_at<?) "
                    f"ORDER BY created_at {'ASC' if status == 'pending' else 'DESC'} LIMIT ?",
                    (status, int(include_shadow), before, before, min(max(limit, 1), 200)))
     return [_item(r) for r in rows]
 
 
-@app.get("/v1/review/stats", tags=["review queue (admin)"])
-async def review_stats(k: dict = Depends(auth("admin"))):
+@app.get("/v1/review/stats", tags=["review queue (admin)"], dependencies=[ADMIN])
+async def review_stats():
     rows = store.q("SELECT review_status s, human_decision h, COUNT(*) n, MIN(created_at) oldest FROM decisions "
                    "WHERE review_status IS NOT NULL AND shadow=0 GROUP BY 1, 2")
     pending = [r for r in rows if r["s"] == "pending"]
@@ -461,20 +393,16 @@ async def review_stats(k: dict = Depends(auth("admin"))):
             "resolved": {r["h"]: r["n"] for r in rows if r["s"] == "resolved"}}
 
 
-@app.get("/v1/review/{request_id}", response_model=ReviewItem, tags=["review queue (admin)"])
-async def review_get(request_id: str, k: dict = Depends(auth("admin"))):
-    rows = store.q("SELECT * FROM decisions WHERE request_id=? AND review_status IS NOT NULL", (request_id,))
-    if not rows:
-        raise ApiError(404, "NOT_FOUND", "Unknown review item")
-    return _item(rows[0])
+@app.get("/v1/review/{request_id}", response_model=ReviewItem, tags=["review queue (admin)"], dependencies=[ADMIN])
+async def review_get(request_id: str):
+    return _item(_review_row(request_id))
 
 
-@app.post("/v1/review/{request_id}", tags=["review queue (admin)"])
-async def review_resolve(request_id: str, body: ReviewResolve, k: dict = Depends(auth("admin"))):
+@app.post("/v1/review/{request_id}", tags=["review queue (admin)"], dependencies=[ADMIN])
+async def review_resolve(request_id: str, body: HumanVerdict):
     """Moderator verdict. Your app must then publish (APPROVE) or delete (REJECT) the image itself."""
-    if not store.q("SELECT 1 FROM decisions WHERE request_id=? AND review_status IS NOT NULL", (request_id,)):
-        raise ApiError(404, "NOT_FOUND", "Unknown review item")
-    return _resolve(request_id, body.decision, body.reviewer, body.notes)
+    _review_row(request_id)
+    return _resolve(request_id, body)
 
 
 @app.get("/health", tags=["ops"])
@@ -487,7 +415,7 @@ async def health():
 
 if __name__ == "__main__" and sys.argv[1:2] == ["token"]:
     if not JWT_SECRET:
-        sys.exit("Set CTC_JWT_SECRET first")
+        sys.exit("Set CTC_JWT_SECRET (in .env or the environment) first")
     sub, role = sys.argv[2], (sys.argv[3] if len(sys.argv) > 3 else "client")
     hours = float(sys.argv[4]) if len(sys.argv) > 4 else 24
     print(jwt.encode({"sub": sub, "role": role, "exp": int(time.time() + hours * 3600)}, JWT_SECRET, algorithm="HS256"))

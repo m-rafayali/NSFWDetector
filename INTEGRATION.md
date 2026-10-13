@@ -82,7 +82,7 @@ Batch: `POST /v1/moderate/image/batch` takes up to 8 `files` fields. It returns 
 }
 ```
 
-Only use `decision` (and `enforced`) to decide what to do. `scores` and `regions` are for debugging and moderators, and their keys can change when models change. `reasons` codes are stable:
+Only use `decision` (and `enforced`) to decide what to do. `scores` (just the signals the policy reads) and `regions` are for debugging and moderators, and their keys can change when models change. `reasons` codes are stable:
 
 | reason | meaning |
 |---|---|
@@ -111,7 +111,7 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/js
 
 After you post a verdict, **your backend** publishes the image (APPROVE) or deletes or hides it (REJECT). Recently resolved items: `?status=resolved`. In shadow mode, items go into the queue marked `shadow: true` and are hidden unless you pass `include_shadow=true`.
 
-`POST /v1/feedback {"request_id", "human_decision": "APPROVE"|"REJECT", "notes"}` (**admin token**) records a human verdict on **any** decision (for example, a user appeals a REJECT and a moderator overturns it). Please send these. They're how we tune the thresholds.
+`POST /v1/feedback {"request_id", "decision": "APPROVE"|"REJECT", "reviewer", "notes"}` (**admin token**) records a human verdict on **any** decision (for example, a user appeals a REJECT and a moderator overturns it). Please send these. They're how we tune the thresholds.
 
 ## 5. Errors, retries, timeouts
 
@@ -119,7 +119,7 @@ All errors look like `{"error": {"code": "FILE_TOO_LARGE", "message": "…"}}`.
 
 | HTTP | codes | what to do |
 |---|---|---|
-| 400 | `NO_IMAGE`, `EMPTY_FILE`, `BATCH_TOO_LARGE`, `URL_*` | Bug in the caller. Don't retry. |
+| 400 | `EMPTY_FILE`, `BATCH_TOO_LARGE` | Bug in the caller. Don't retry. |
 | 401 / 403 | `UNAUTHORIZED`, `TOKEN_EXPIRED` / `FORBIDDEN` | Bad, missing or expired token, or no admin role. On `TOKEN_EXPIRED`, mint a new token and retry once. Otherwise don't retry; alert. |
 | 409 | `IDEMPOTENCY_KEY_REUSED` | You sent a different image with an `idempotency_key` that was already used. Use one unique key per upload (e.g. your upload id). |
 | 413 | `FILE_TOO_LARGE`, `IMAGE_TOO_LARGE` | Ask the user for a smaller image, or downscale to ≤ 4096 px before uploading. |

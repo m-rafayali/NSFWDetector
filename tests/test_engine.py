@@ -65,6 +65,7 @@ def test_rules_cascade_and_profiles(mod):
     assert mod.moderate(img_bytes(GREY))[1] is True  # exact-hash cache
     d, _ = mod.moderate(img_bytes(RED))
     assert d.decision == "REJECT" and d.reasons == ["EXPLICIT_CONTENT"] and d.regions
+    assert set(d.scores) <= {"fake.nsfw", "heavy.nsfw", "fake.medium"}  # only signals the policy reads
     assert "heavy.nsfw" not in d.scores  # stage 1 rejected, stage 2 skipped
     d, _ = mod.moderate(img_bytes(PINKISH))
     assert "heavy.nsfw" in d.scores and d.decision == "REVIEW"  # borderline -> stage 2 ran

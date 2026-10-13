@@ -2,8 +2,9 @@
 # Bump policy_version on ANY change to thresholds/rules; it is returned with every decision.
 policy_version: "2026-10-13.3"
 
-# Model registry. `export.py` writes models/<name>.onnx. Disable a model with enabled: false
+# Model registry. `export.py` writes models/<file>.onnx. Disable a model with enabled: false
 # (e.g. drop the AGPL region detector) and the pipeline keeps working without it.
+# Bake-off (2026-10-13, README "Model choice") also tested Marqo, AdamCodd, NudeNet-640m: not used.
 models:
   freepik:      # Freepik/nsfw_image_detector, EVA02-base, MIT
     kind: classifier
@@ -11,36 +12,18 @@ models:
     file: freepik-int8  # INT8: identical decisions to FP32 on all 149 dev images, ~0.4 GB less RAM
     stage: 2          # heavy (~0.4 s on M4): runs only when stage 1 is not clearly safe
     size: 448
-    resize: squash
     mean: [0.48145466, 0.4578275, 0.40821073]
     std: [0.26862954, 0.26130258, 0.27577711]
     labels: [neutral, low, medium, high]
-  marqo:        # Marqo/nsfw-image-detection-384, ViT-tiny, Apache-2.0
-    kind: classifier
-    enabled: false
-    size: 384
-    resize: squash
-    mean: [0.5, 0.5, 0.5]
-    std: [0.5, 0.5, 0.5]
-    labels: [nsfw, sfw]
   falconsai:    # Falconsai/nsfw_image_detection, ViT-base-224, Apache-2.0. Cascade gate only (no rule)
     kind: classifier
     enabled: true
     file: falconsai-int8
     stage: 1
     size: 224
-    resize: squash
     mean: [0.5, 0.5, 0.5]
     std: [0.5, 0.5, 0.5]
     labels: [normal, nsfw]
-  adamcodd:     # AdamCodd/vit-base-nsfw-detector, ViT-base-384, Apache-2.0
-    kind: classifier
-    enabled: false
-    size: 384
-    resize: squash
-    mean: [0.5, 0.5, 0.5]
-    std: [0.5, 0.5, 0.5]
-    labels: [sfw, nsfw]
   nudenet:      # NudeNet v3.4 320n detector. AGPL-3.0 weights: optional layer, see LICENSES.md
     kind: detector
     enabled: true
@@ -55,7 +38,7 @@ limits:
   max_pixels: 40000000    # 40 MP decompression-bomb guard
   max_frames: 500         # animated GIF/WebP; we score first/middle/last frame and take the max
   max_side: 1280          # working resolution before per-model resize
-cache_size: 10000         # in-memory exact-SHA-256 decision cache
+cache_size: 10000         # in-memory model-score cache, keyed by exact SHA-256
 
 # Stage 2 is skipped only if ALL these stage-1 signals are below their value (empty = always run).
 # Gate swept on dev only (2026-10-13): 0.3/0.2 had identical dev cost to 0.05/0.1 but sends 55% (not 72%)

@@ -4,7 +4,6 @@ models
 data
 runs
 labeled
-keys.yaml
 .env
 tests
 **/__pycache__

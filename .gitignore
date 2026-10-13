@@ -13,7 +13,6 @@ runs/
 *.heif
 *.onnx
 *.db
-keys.yaml
 .env
 .venv/
 __pycache__/

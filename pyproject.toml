@@ -13,13 +13,21 @@ dependencies = [
     "opencv-python-headless>=4.10",
     "pi-heif>=1.0",
     "pyyaml>=6.0",
-    "httpx>=0.28",
     "pyjwt>=2.9",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "scikit-learn>=1.5", "matplotlib>=3.9", "locust>=2.32"]
-export = ["torch>=2.5", "timm>=1.0", "transformers>=4.46", "onnx>=1.17", "onnxscript>=0.1", "huggingface-hub>=0.26"]
+dev = [
+    "pytest>=8",
+    "locust>=2.32",
+    "httpx>=0.28",
+]
+export = [
+    "torch>=2.5",
+    "timm>=1.0",
+    "transformers>=4.46",
+    "onnx>=1.17",
+]
 
 [tool.uv]
 default-groups = ["dev"]

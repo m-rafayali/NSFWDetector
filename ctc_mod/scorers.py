@@ -127,14 +127,9 @@ def _iou(a: np.ndarray, b: np.ndarray) -> float:
     return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter + 1e-9)
 
 
-def load(models_cfg: dict, only: list[str] | None = None) -> list[Scorer]:
-    """Instantiate enabled models (or exactly `only`, for the bake-off)."""
-    out = []
-    for name, cfg in models_cfg.items():
-        if (only is None and not cfg.get("enabled")) or (only is not None and name not in only):
-            continue
-        out.append((Detector if cfg["kind"] == "detector" else Classifier)(name, cfg))
-    return out
+def load(models_cfg: dict) -> list[Scorer]:
+    """Instantiate the enabled models."""
+    return [(Detector if c["kind"] == "detector" else Classifier)(n, c) for n, c in models_cfg.items() if c.get("enabled")]
 
 
 # --- Hooks (interfaces only; no implementation in Phase 1) -------------------------------------

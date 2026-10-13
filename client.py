@@ -34,7 +34,7 @@ class ModerationError(Exception):
 
 class ModerationClient:
     def __init__(self, base_url: str, token: str, timeout: float = 15.0, retries: int = 3):
-        """token: HS256 JWT with `sub` and `exp` (refresh it before `exp`)."""
+        """token: HS256 JWT with `exp` and `sub` or `id` (refresh it before `exp`)."""
         self.http = httpx.Client(base_url=base_url, headers={"Authorization": f"Bearer {token}"}, timeout=timeout)
         self.retries = retries
 
@@ -63,5 +63,5 @@ class ModerationClient:
         raise AssertionError("unreachable")
 
     def feedback(self, request_id: str, human_decision: Literal["APPROVE", "REJECT"], notes: str | None = None) -> None:
-        self.http.post("/v1/feedback", json={"request_id": request_id, "human_decision": human_decision,
+        self.http.post("/v1/feedback", json={"request_id": request_id, "decision": human_decision,
                                              "notes": notes}).raise_for_status()
