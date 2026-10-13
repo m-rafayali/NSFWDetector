@@ -2,7 +2,8 @@
 
 Env: CTC_JWT_SECRET (required), CTC_RATE_PER_MIN, CTC_CONFIG, CTC_DB, CTC_SHADOW, CTC_KILL_SWITCH,
      CTC_CONCURRENCY, CTC_QUEUE, CTC_TIMEOUT_S, CTC_ALLOW_URL, CTC_MODELS_DIR, CTC_ORT_THREADS.
-Auth: `Authorization: Bearer <JWT>`, HS256, claims `sub` + `exp` required, `role: admin` for /v1/review*.
+Auth: `Authorization: Bearer <JWT>`, HS256, `exp` required; caller id = `sub` or `id` (CTC app tokens use `id`);
+      `role: admin` (any case) for /v1/review* and /v1/feedback.
 Dev token: CTC_JWT_SECRET=... python -m ctc_mod.api token <sub> [admin] [hours]
 """
 import asyncio
@@ -187,19 +188,24 @@ BEARER = HTTPBearer(auto_error=False, description="JWT signed with CTC_JWT_SECRE
 def auth(role: str = "client"):
     def dep(request: Request, cred: HTTPAuthorizationCredentials | None = Depends(BEARER)) -> dict:
         if not cred or not JWT_SECRET:
+            print(JWT_SECRET)
+            print(cred)
             raise ApiError(401, "UNAUTHORIZED", "Missing bearer token")
         try:
-            claims = jwt.decode(cred.credentials, JWT_SECRET, algorithms=["HS256"], options={"require": ["exp", "sub"]})
+            claims = jwt.decode(cred.credentials, JWT_SECRET, algorithms=["HS256"], options={"require": ["exp"]})
         except jwt.ExpiredSignatureError:
             raise ApiError(401, "TOKEN_EXPIRED", "Token has expired")
         except jwt.InvalidTokenError:
             raise ApiError(401, "UNAUTHORIZED", "Invalid token")
-        if role == "admin" and claims.get("role") != "admin":
+        sub = str(claims.get("sub") or claims.get("id") or "")
+        if not sub:
+            raise ApiError(401, "UNAUTHORIZED", "Token needs a `sub` or `id` claim")
+        if role == "admin" and str(claims.get("role", "")).lower() != "admin":
             raise ApiError(403, "FORBIDDEN", "This endpoint needs a token with role=admin")
-        if not limiter.allow(str(claims["sub"])):
+        if not limiter.allow(sub):
             raise ApiError(429, "RATE_LIMITED", "Rate limit exceeded", {"Retry-After": "5"})
-        request.state.key_id = str(claims["sub"])
-        return {"id": str(claims["sub"]), "role": claims.get("role")}
+        request.state.key_id = sub
+        return {"id": sub, "role": claims.get("role")}
     return dep
 
 
@@ -380,8 +386,9 @@ async def moderate_batch(files: list[UploadFile] = File(..., description=f"Up to
 
 
 @app.post("/v1/feedback", tags=["feedback"])
-async def feedback(fb: Feedback, k: dict = Depends(auth())):
-    """Record a human outcome for any decision (e.g. an appeal); used to retune thresholds."""
+async def feedback(fb: Feedback, k: dict = Depends(auth("admin"))):
+    """Moderator outcome for any decision (e.g. an appeal); used to retune thresholds. Admin only, so app users
+    can't inject fake verdicts into the tuning data."""
     return _resolve(fb.request_id, fb.human_decision, fb.reviewer, fb.notes)
 
 

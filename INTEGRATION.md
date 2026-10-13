@@ -22,9 +22,9 @@ Rules that matter:
 Every call except `/health` needs `Authorization: Bearer <token>`. The token must be:
 
 - an **HS256** JWT signed with `CTC_JWT_SECRET` (other algorithms are refused);
-- carrying **`sub`**, the caller's identity (e.g. `"app-backend"`), which is also used as the rate-limit bucket;
+- carrying **`sub` or `id`**, the caller's identity, which is also used as the rate-limit bucket. CTC app login tokens (`{"id", "iat", "exp"}`) work as-is;
 - carrying **`exp`**, an expiry time. Keep it short (e.g. 1 h) and mint new tokens as needed;
-- carrying **`"role": "admin"`** for the `/v1/review*` endpoints. Only the admin dashboard backend should mint admin tokens.
+- carrying **`"role": "admin"`** (any case) for `/v1/review*` and `/v1/feedback`. Only the admin dashboard backend should mint admin tokens.
 
 Example in Python (PyJWT), Node (`jsonwebtoken`) is the same idea:
 
@@ -111,7 +111,7 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/js
 
 After you post a verdict, **your backend** publishes the image (APPROVE) or deletes or hides it (REJECT). Recently resolved items: `?status=resolved`. In shadow mode, items go into the queue marked `shadow: true` and are hidden unless you pass `include_shadow=true`.
 
-`POST /v1/feedback {"request_id", "human_decision": "APPROVE"|"REJECT", "notes"}` records a human verdict on **any** decision (for example, a user appeals a REJECT and a moderator overturns it). Please send these. They're how we tune the thresholds.
+`POST /v1/feedback {"request_id", "human_decision": "APPROVE"|"REJECT", "notes"}` (**admin token**) records a human verdict on **any** decision (for example, a user appeals a REJECT and a moderator overturns it). Please send these. They're how we tune the thresholds.
 
 ## 5. Errors, retries, timeouts
 

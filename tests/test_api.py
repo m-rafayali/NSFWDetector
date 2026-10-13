@@ -41,6 +41,10 @@ def test_moderate_and_error_format(api):
     assert post(c, img_bytes(), key=tok(ttl=-10)).json()["error"]["code"] == "TOKEN_EXPIRED"
     assert post(c, img_bytes(), key=tok(secret=SECRET, alg="HS512")).status_code == 401  # HS256 only
     no_exp = "Bearer " + jwt.encode({"sub": "x"}, SECRET, algorithm="HS256")
+    app_style = "Bearer " + jwt.encode({"id": "6a7c", "iat": int(time.time()), "exp": int(time.time()) + 60}, SECRET)
+    assert post(c, img_bytes(), key=app_style).status_code == 200  # CTC app tokens carry `id`, not `sub`
+    no_id = "Bearer " + jwt.encode({"exp": int(time.time()) + 60}, SECRET)
+    assert post(c, img_bytes(), key=no_id).status_code == 401
     assert post(c, img_bytes(), key=no_exp).status_code == 401
     assert c.post("/v1/moderate/image", files={"file": ("x", img_bytes())}).status_code == 401
     r = post(c, b"GIF89a-not-really")
@@ -88,8 +92,10 @@ def test_review_queue_flow(api):
     assert r.status_code == 200
     assert c.get("/v1/review", headers=adm).json() == []
     assert c.get(f"/v1/review/{rid}", headers=adm).json()["human_decision"] == "REJECT"
-    assert c.post("/v1/feedback", json={"request_id": "nope", "human_decision": "APPROVE"},
-                  headers={"Authorization": CLIENT_KEY}).status_code == 404
+    fb = {"request_id": rid, "human_decision": "APPROVE"}
+    assert c.post("/v1/feedback", json=fb, headers={"Authorization": CLIENT_KEY}).status_code == 403
+    assert c.post("/v1/feedback", json={**fb, "request_id": "nope"}, headers=adm).status_code == 404
+    assert c.get("/v1/review", headers={"Authorization": tok("x", "Admin")}).status_code == 200  # case-insensitive
 
 
 def test_health_and_removed_endpoints(api):
