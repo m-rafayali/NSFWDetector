@@ -37,7 +37,7 @@ CTC_API_KEY=… uv run locust -f loadtest.py --headless -u 2 -r 2 -t 1m --host h
 - [x] (b) cascade + fusion rules + policy config (thresholds PROVISIONAL)
 - [x] (c) FastAPI: auth, rate limit, backpressure, shadow, kill switch, review queue API, metrics, tests
 - [x] (d) load test on M4. t3.small numbers are estimates (not measured on AWS)
-- [x] (e) Containerfile/compose.yaml/Caddy/deploy.sh/CI/docs (container stack verified locally 2026-10-13)
+- [x] (e) Containerfile/compose.yaml/Caddy/deploy.sh/CI/docs (stack verified locally under Podman 6.0.2 + podman-compose, 2026-10-13)
 - [x] Bake-off on 185 labeled images (2026-10-13): NudeNet-rgb + Freepik(INT8) + Falconsai gate; thresholds CV-tuned; baseline set
 - [ ] Owner: check 2 suspect labels (README), grow labeled set toward ~1.5k/2.5k/750, re-run eval
 - [ ] Owner: first deploy to t3.small in shadow mode; run loadtest.py there to replace the estimates
