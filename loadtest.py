@@ -1,6 +1,6 @@
 """Load test (locust). Each request gets unique bytes so the SHA cache never hits.
 
-    CTC_API_KEY=... CTC_LOAD_DIR=path/to/jpegs uv run locust -f loadtest.py --headless \
+    CTC_TOKEN=$(uv run python -m ctc_mod.api token loadtest) CTC_LOAD_DIR=path/to/jpegs uv run locust -f loadtest.py --headless \
         -u 4 -r 4 -t 2m --host http://localhost:8000 --csv runs/load
 
 Without CTC_LOAD_DIR it sends synthetic photos (these mostly clear stage 1, so they understate
@@ -49,4 +49,4 @@ class Uploader(HttpUser):
     def moderate(self):
         data = random.choice(IMAGES) + os.urandom(16)  # bytes after JPEG EOI: decodes the same, new SHA
         self.client.post("/v1/moderate/image", files={"file": ("x.jpg", data)}, data={"context": "post"},
-                         headers={"X-API-Key": os.environ["CTC_API_KEY"]}, name="/v1/moderate/image")
+                         headers={"Authorization": "Bearer " + os.environ["CTC_TOKEN"]}, name="/v1/moderate/image")

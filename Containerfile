@@ -10,7 +10,7 @@ COPY ctc_mod ctc_mod
 COPY config.yaml .
 RUN useradd --system --uid 10001 ctc && mkdir -p /data && chown ctc /data
 USER ctc
-ENV PATH=/app/.venv/bin:$PATH CTC_DB=/data/ctc.db CTC_KEYS_FILE=/run/keys.yaml CTC_MODELS_DIR=/models
+ENV PATH=/app/.venv/bin:$PATH CTC_DB=/data/ctc.db CTC_MODELS_DIR=/models
 EXPOSE 8000
 # ONE worker process on purpose: in-memory rate limits/cache; concurrency via CTC_CONCURRENCY threads.
 # (Healthcheck lives in compose.yaml: OCI images built by Podman drop HEALTHCHECK.)

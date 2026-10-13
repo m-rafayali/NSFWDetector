@@ -13,8 +13,8 @@ dependencies = [
     "opencv-python-headless>=4.10",
     "pi-heif>=1.0",
     "pyyaml>=6.0",
-    "prometheus-client>=0.21",
     "httpx>=0.28",
+    "pyjwt>=2.9",
 ]
 
 [dependency-groups]

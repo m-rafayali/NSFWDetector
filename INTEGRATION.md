@@ -15,7 +15,26 @@ phone ──upload──▶ your backend ──store privately as PENDING──�
 Rules that matter:
 
 1. **An image is never publicly visible before a decision.** Upload it to private storage with status `pending`, and only serve it to other users after `APPROVE` (or after a moderator approves it).
-2. **Call the API from your backend, never from the mobile app.** The API key must stay server-side.
+2. **Call the API from your backend, never from the mobile app.** Tokens are signed with a shared secret (`CTC_JWT_SECRET`) that must stay server-side.
+
+## Authentication (JWT)
+
+Every call except `/health` needs `Authorization: Bearer <token>`. The token must be:
+
+- an **HS256** JWT signed with `CTC_JWT_SECRET` (other algorithms are refused);
+- carrying **`sub`**, the caller's identity (e.g. `"app-backend"`), which is also used as the rate-limit bucket;
+- carrying **`exp`**, an expiry time. Keep it short (e.g. 1 h) and mint new tokens as needed;
+- carrying **`"role": "admin"`** for the `/v1/review*` endpoints. Only the admin dashboard backend should mint admin tokens.
+
+Example in Python (PyJWT), Node (`jsonwebtoken`) is the same idea:
+
+```python
+import jwt, time
+token = jwt.encode({"sub": "app-backend", "exp": int(time.time()) + 3600}, CTC_JWT_SECRET, algorithm="HS256")
+admin = jwt.encode({"sub": "dashboard", "role": "admin", "exp": int(time.time()) + 3600}, CTC_JWT_SECRET, algorithm="HS256")
+```
+
+**Don't sign these tokens with your app's user-login secret.** If you do, any logged-in app user's token would also work here. Use a dedicated secret only for service-to-service calls.
 3. **Save the `request_id`** next to the image record. You need it for the review queue and for feedback.
 4. **Fail closed.** If moderation fails after retries, keep the image `pending` and retry later (or treat it as REVIEW). Never auto-publish on error.
 5. **Shadow mode:** while `enforced` is `false`, `decision` is always `APPROVE` and the real verdict is in `shadow_decision`. Publish as you normally would, but store `shadow_decision` so we can compare it with human review before we switch enforcement on.
@@ -24,7 +43,7 @@ Rules that matter:
 
 ```bash
 curl -s https://moderation.example.com/v1/moderate/image \
-  -H "X-API-Key: $CTC_API_KEY" \
+  -H "Authorization: Bearer $CTC_TOKEN" \
   -F file=@photo.jpg \
   -F context=profile_photo \
   -F user_id=u_123 \
@@ -77,16 +96,16 @@ Suggested user-facing messages: on REJECT, *"This photo doesn't meet our communi
 
 ## 4. Review queue (admin dashboard)
 
-The REVIEW endpoints need an **admin** API key. Use a separate key, kept only on the admin dashboard's backend. **This service never stores images**, so your dashboard shows the image from your own storage, looked up by the `request_id` you saved.
+The REVIEW endpoints need a token with **`"role": "admin"`**. Mint admin tokens only on the admin dashboard's backend. **This service never stores images**, so your dashboard shows the image from your own storage, looked up by the `request_id` you saved.
 
 ```bash
 # oldest-first pending items (max 200 per call; page with ?before=<created_at of last item>)
-curl -s -H "X-API-Key: $ADMIN_KEY" "https://…/v1/review?status=pending&limit=50"
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "https://…/v1/review?status=pending&limit=50"
 # one item / queue stats (pending count, oldest pending age)
-curl -s -H "X-API-Key: $ADMIN_KEY" https://…/v1/review/<request_id>
-curl -s -H "X-API-Key: $ADMIN_KEY" https://…/v1/review/stats
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://…/v1/review/<request_id>
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://…/v1/review/stats
 # moderator verdict
-curl -s -H "X-API-Key: $ADMIN_KEY" -H 'Content-Type: application/json' \
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"decision":"REJECT","reviewer":"mod_anna","notes":"sheer top"}' https://…/v1/review/<request_id>
 ```
 
@@ -101,7 +120,7 @@ All errors look like `{"error": {"code": "FILE_TOO_LARGE", "message": "…"}}`.
 | HTTP | codes | what to do |
 |---|---|---|
 | 400 | `NO_IMAGE`, `EMPTY_FILE`, `BATCH_TOO_LARGE`, `URL_*` | Bug in the caller. Don't retry. |
-| 401 / 403 | `UNAUTHORIZED` / `FORBIDDEN` | Bad or missing key, or the wrong role. Don't retry. Alert. |
+| 401 / 403 | `UNAUTHORIZED`, `TOKEN_EXPIRED` / `FORBIDDEN` | Bad, missing or expired token, or no admin role. On `TOKEN_EXPIRED`, mint a new token and retry once. Otherwise don't retry; alert. |
 | 413 | `FILE_TOO_LARGE`, `IMAGE_TOO_LARGE` | Ask the user for a smaller image, or downscale to ≤ 4096 px before uploading. |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | Not an accepted image format. |
 | 422 | `CORRUPT_IMAGE`, `TOO_MANY_FRAMES`, `VALIDATION_ERROR` | Bad file or bad field. Don't retry. |
@@ -116,7 +135,4 @@ All errors look like `{"error": {"code": "FILE_TOO_LARGE", "message": "…"}}`.
 
 ## 6. Other endpoints
 
-- `GET /healthz`: the process is alive.
-- `GET /readyz`: models are loaded (503 until then).
-- `GET /v1/policy`: current rules, thresholds and policy_version (needs any key).
-- `GET /metrics`: Prometheus metrics (needs an admin key).
+- `GET /health`: no auth. 200 `{"status":"ok","policy_version":…}` once models are loaded, 503 `NOT_READY` while starting.

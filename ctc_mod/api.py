@@ -1,8 +1,9 @@
 """FastAPI service. Run: uvicorn ctc_mod.api:app --host 0.0.0.0 --port 8000 (ONE worker; see README).
 
-Env: CTC_CONFIG, CTC_KEYS_FILE, CTC_DB, CTC_SHADOW, CTC_KILL_SWITCH, CTC_CONCURRENCY, CTC_QUEUE,
-     CTC_TIMEOUT_S, CTC_ALLOW_URL, CTC_MODELS_DIR, CTC_ORT_THREADS.
-New API key: python -m ctc_mod.api newkey <id> [client|admin]
+Env: CTC_JWT_SECRET (required), CTC_RATE_PER_MIN, CTC_CONFIG, CTC_DB, CTC_SHADOW, CTC_KILL_SWITCH,
+     CTC_CONCURRENCY, CTC_QUEUE, CTC_TIMEOUT_S, CTC_ALLOW_URL, CTC_MODELS_DIR, CTC_ORT_THREADS.
+Auth: `Authorization: Bearer <JWT>`, HS256, claims `sub` + `exp` required, `role: admin` for /v1/review*.
+Dev token: CTC_JWT_SECRET=... python -m ctc_mod.api token <sub> [admin] [hours]
 """
 import asyncio
 import hashlib
@@ -10,7 +11,6 @@ import ipaddress
 import json
 import logging
 import os
-import secrets
 import socket
 import sqlite3
 import sys
@@ -24,12 +24,11 @@ from typing import Literal
 from urllib.parse import urljoin, urlparse
 
 import httpx
-import yaml
+import jwt
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
-from fastapi.security import APIKeyHeader
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -43,14 +42,11 @@ SHADOW = env("CTC_SHADOW", "0") == "1"
 KILL = env("CTC_KILL_SWITCH", "0") == "1"
 ALLOW_URL = env("CTC_ALLOW_URL", "0") == "1"
 BATCH_MAX = 8
+JWT_SECRET = env("CTC_JWT_SECRET", "")
+RATE_PER_MIN = int(env("CTC_RATE_PER_MIN", "600"))
 
 log = logging.getLogger("ctc")
 logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
-M_DEC = Counter("ctc_decisions_total", "Decisions", ["decision", "context", "enforced"])
-M_ERR = Counter("ctc_errors_total", "Errors by code", ["code"])
-M_LAT = Histogram("ctc_latency_seconds", "Moderation latency", buckets=(.05, .1, .2, .3, .5, .75, 1, 2, 5, 10))
-M_INFLIGHT = Gauge("ctc_inflight", "Requests inside the inference queue")
-M_CACHE = Counter("ctc_cache_hits_total", "Exact-hash cache hits")
 
 
 class ApiError(Exception):
@@ -141,48 +137,36 @@ class Store:
 
 
 # ---------------------------------------------------------------- auth + rate limit
-class Keys:
-    """keys.yaml: {keys: [{id, sha256, role: client|admin, rate_per_min}]}. Reloaded on change (rotation)."""
+class RateLimiter:
+    """Token bucket per JWT `sub`; burst = one minute of quota. In-memory (single process)."""
 
-    def __init__(self, path: str):
-        self.path, self.mtime, self.by_hash = Path(path), None, {}
-        self.buckets: dict[str, tuple[float, float]] = {}
-        self.lock = threading.Lock()
+    def __init__(self, per_min: int):
+        self.rate, self.buckets, self.lock = per_min / 60.0, {}, threading.Lock()
 
-    def lookup(self, key: str) -> dict | None:
-        try:
-            m = self.path.stat().st_mtime
-            if m != self.mtime:
-                self.by_hash = {k["sha256"]: k for k in yaml.safe_load(self.path.read_text())["keys"]}
-                self.mtime = m
-        except FileNotFoundError:
-            self.by_hash = {}
-        return self.by_hash.get(hashlib.sha256(key.encode()).hexdigest())
-
-    def allow(self, k: dict, cost: float = 1) -> bool:
-        rate = k.get("rate_per_min", 600) / 60.0
+    def allow(self, sub: str, cost: float = 1) -> bool:
         with self.lock:
-            tokens, last = self.buckets.get(k["id"], (rate * 60, time.monotonic()))
+            tokens, last = self.buckets.get(sub, (self.rate * 60, time.monotonic()))
             now = time.monotonic()
-            tokens = min(rate * 60, tokens + (now - last) * rate)  # burst = one minute of quota
-            if tokens < cost:
-                self.buckets[k["id"]] = (tokens, now)
-                return False
-            self.buckets[k["id"]] = (tokens - cost, now)
-            return True
+            tokens = min(self.rate * 60, tokens + (now - last) * self.rate)
+            ok = tokens >= cost
+            self.buckets[sub] = (tokens - cost if ok else tokens, now)
+            return ok
 
 
 # ---------------------------------------------------------------- app state
 @asynccontextmanager
 async def lifespan(_):
-    threading.Thread(target=_load, daemon=True).start()  # /healthz answers while models load
+    if len(JWT_SECRET) < 32:
+        log.warning(json.dumps({"event": "weak_or_missing_jwt_secret", "length": len(JWT_SECRET),
+                                "advice": "use >= 32 random chars, e.g. openssl rand -base64 48"}))
+    threading.Thread(target=_load, daemon=True).start()  # /health answers (503) while models load
     yield
 
 
 app = FastAPI(title="CTC Image Moderation", version="1.0.0", lifespan=lifespan,
               description="Decides APPROVE / REVIEW / REJECT for user-uploaded images. See INTEGRATION.md.")
 S: dict = {"ready": False}
-keys = Keys(env("CTC_KEYS_FILE", "keys.yaml"))
+limiter = RateLimiter(RATE_PER_MIN)
 store = Store(env("CTC_DB", "data/ctc.db"))
 pool = ThreadPoolExecutor(max_workers=CONCURRENCY)
 slots = asyncio.Semaphore(CONCURRENCY)
@@ -197,26 +181,30 @@ def _load():
                          "shadow": SHADOW, "kill_switch": KILL}))
 
 
-API_KEY = APIKeyHeader(name="X-API-Key", auto_error=False, description="Your API key (Swagger: Authorize button)")
+BEARER = HTTPBearer(auto_error=False, description="JWT signed with CTC_JWT_SECRET (HS256). Swagger: Authorize.")
 
 
 def auth(role: str = "client"):
-    def dep(request: Request, x_api_key: str | None = Depends(API_KEY)) -> dict:
-        k = keys.lookup(x_api_key) if x_api_key else None
-        if not k:
-            raise ApiError(401, "UNAUTHORIZED", "Missing or invalid X-API-Key")
-        if role == "admin" and k.get("role") != "admin":
-            raise ApiError(403, "FORBIDDEN", "This endpoint needs an admin key")
-        if not keys.allow(k):
-            raise ApiError(429, "RATE_LIMITED", "Per-key rate limit exceeded", {"Retry-After": "5"})
-        request.state.key_id = k["id"]
-        return k
+    def dep(request: Request, cred: HTTPAuthorizationCredentials | None = Depends(BEARER)) -> dict:
+        if not cred or not JWT_SECRET:
+            raise ApiError(401, "UNAUTHORIZED", "Missing bearer token")
+        try:
+            claims = jwt.decode(cred.credentials, JWT_SECRET, algorithms=["HS256"], options={"require": ["exp", "sub"]})
+        except jwt.ExpiredSignatureError:
+            raise ApiError(401, "TOKEN_EXPIRED", "Token has expired")
+        except jwt.InvalidTokenError:
+            raise ApiError(401, "UNAUTHORIZED", "Invalid token")
+        if role == "admin" and claims.get("role") != "admin":
+            raise ApiError(403, "FORBIDDEN", "This endpoint needs a token with role=admin")
+        if not limiter.allow(str(claims["sub"])):
+            raise ApiError(429, "RATE_LIMITED", "Rate limit exceeded", {"Retry-After": "5"})
+        request.state.key_id = str(claims["sub"])
+        return {"id": str(claims["sub"]), "role": claims.get("role")}
     return dep
 
 
 # ---------------------------------------------------------------- errors
 def _err(status, code, message, headers=None):
-    M_ERR.labels(code).inc()
     return JSONResponse({"error": {"code": code, "message": message}}, status, headers=headers)
 
 
@@ -256,14 +244,12 @@ async def _infer(data: bytes, context: str | None) -> tuple[Decision, bool]:
     if waiting >= QUEUE + CONCURRENCY:
         raise ApiError(503, "OVERLOADED", "Server busy, retry with backoff", {"Retry-After": "2"})
     waiting += 1
-    M_INFLIGHT.inc()
     try:
         await asyncio.wait_for(slots.acquire(), TIMEOUT_S)
     except TimeoutError:
         raise ApiError(503, "OVERLOADED", "Timed out waiting for a worker", {"Retry-After": "2"})
     finally:
         waiting -= 1
-        M_INFLIGHT.dec()
     try:
         return await asyncio.get_running_loop().run_in_executor(pool, S["mod"].moderate, data, context)
     finally:
@@ -282,8 +268,6 @@ async def _moderate(data: bytes, k: dict, context, user_id, idem) -> ModerationR
         d, cached = Decision("REVIEW", ["KILL_SWITCH"], {}, [], [], S["mod"].policy_version if S["ready"] else "", sha, ""), False
     else:
         d, cached = await _infer(data, context)
-    if cached:
-        M_CACHE.inc()
     real = d.decision
     res = ModerationResult(
         request_id=rid, decision="APPROVE" if SHADOW else real, enforced=not SHADOW,
@@ -299,8 +283,6 @@ async def _moderate(data: bytes, k: dict, context, user_id, idem) -> ModerationR
     except sqlite3.IntegrityError:  # concurrent duplicate idempotency key: return the stored one
         row = store.q("SELECT response FROM decisions WHERE key_id=? AND idem=?", (k["id"], idem))
         return ModerationResult(**{**json.loads(row[0]["response"]), "cached": True})
-    M_DEC.labels(real, context or "", str(not SHADOW).lower()).inc()
-    M_LAT.observe(res.latency_ms / 1000)
     log.info(json.dumps({"event": "moderated", "request_id": rid, "key_id": k["id"], "user_id": user_id,
                          "context": context, "decision": real, "enforced": not SHADOW, "reasons": d.reasons,
                          "sha256": d.image_sha256, "phash": d.phash, "latency_ms": res.latency_ms, "cached": cached}))
@@ -363,7 +345,7 @@ Context = Literal["profile_photo", "chat", "post"]
 
 # ---------------------------------------------------------------- routes
 @app.post("/v1/moderate/image", response_model=ModerationResult, tags=["moderation"],
-          responses={s: {"description": d} for s, d in {400: "Bad input", 401: "Bad API key", 413: "Too large",
+          responses={s: {"description": d} for s, d in {400: "Bad input", 401: "Bad or expired token", 413: "Too large",
                      415: "Unsupported format", 422: "Undecodable/invalid", 429: "Rate limited", 503: "Busy or loading"}.items()})
 async def moderate_image(file: UploadFile | None = File(None, description="JPEG, PNG, GIF, WebP or HEIC/HEIF"),
                          image_url: str | None = Form(None, description="Only if enabled server-side (CTC_ALLOW_URL=1)"),
@@ -386,8 +368,8 @@ async def moderate_batch(files: list[UploadFile] = File(..., description=f"Up to
                          k: dict = Depends(auth())):
     if len(files) > BATCH_MAX:
         raise ApiError(400, "BATCH_TOO_LARGE", f"At most {BATCH_MAX} files per batch")
-    if not keys.allow(k, len(files) - 1):  # each image counts against the rate limit
-        raise ApiError(429, "RATE_LIMITED", "Per-key rate limit exceeded", {"Retry-After": "5"})
+    if not limiter.allow(k["id"], len(files) - 1):  # each image counts against the rate limit
+        raise ApiError(429, "RATE_LIMITED", "Rate limit exceeded", {"Retry-After": "5"})
 
     async def one(f: UploadFile) -> BatchItem:
         try:
@@ -458,34 +440,17 @@ async def review_resolve(request_id: str, body: ReviewResolve, k: dict = Depends
     return _resolve(request_id, body.decision, body.reviewer, body.notes)
 
 
-@app.get("/v1/policy", tags=["ops"])
-async def policy(k: dict = Depends(auth())):
-    if not S["ready"]:
-        raise ApiError(503, "NOT_READY", "Models are still loading", {"Retry-After": "10"})
-    c = S["mod"].cfg
-    return {"policy_version": c["policy_version"], "rules": c["policy"]["rules"], "profiles": c["policy"].get("profiles", {}),
-            "limits": c["limits"], "models": S["mod"].models, "shadow": SHADOW, "kill_switch": KILL}
-
-
-@app.get("/healthz", tags=["ops"])
-async def healthz():
-    return {"status": "ok"}
-
-
-@app.get("/readyz", tags=["ops"])
-async def readyz():
+@app.get("/health", tags=["ops"])
+async def health():
+    """200 once models are loaded and warmed up; 503 while starting. No auth (used by health checks)."""
     if not S["ready"]:
         return _err(503, "NOT_READY", "Models are still loading")
-    return {"status": "ready", "policy_version": S["mod"].policy_version}
+    return {"status": "ok", "policy_version": S["mod"].policy_version}
 
 
-@app.get("/metrics", tags=["ops"])
-async def metrics(k: dict = Depends(auth("admin"))):
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
-if __name__ == "__main__" and sys.argv[1:2] == ["newkey"]:
-    key = "ctc_" + secrets.token_urlsafe(32)
-    role = sys.argv[3] if len(sys.argv) > 3 else "client"
-    print(f"API key (give to the caller, shown once): {key}\nAdd to keys.yaml:\n"
-          f"  - {{id: {sys.argv[2]}, sha256: {hashlib.sha256(key.encode()).hexdigest()}, role: {role}, rate_per_min: 600}}")
+if __name__ == "__main__" and sys.argv[1:2] == ["token"]:
+    if not JWT_SECRET:
+        sys.exit("Set CTC_JWT_SECRET first")
+    sub, role = sys.argv[2], (sys.argv[3] if len(sys.argv) > 3 else "client")
+    hours = float(sys.argv[4]) if len(sys.argv) > 4 else 24
+    print(jwt.encode({"sub": sub, "role": role, "exp": int(time.time() + hours * 3600)}, JWT_SECRET, algorithm="HS256"))

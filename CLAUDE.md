@@ -19,7 +19,7 @@ uv sync                                         # deps (dev group default)
 uv run pytest -q                                # tests (no weights needed)
 uv run --group export python export.py          # models/*.onnx
 uv run uvicorn ctc_mod.api:app --port 8000      # one process only
-uv run python -m ctc_mod.api newkey <id> [admin]
+CTC_JWT_SECRET=… uv run python -m ctc_mod.api token <sub> [admin] [hours]   # dev JWT
 uv run python eval.py score|report [--final]|robust|gate
 CTC_API_KEY=… uv run locust -f loadtest.py --headless -u 2 -r 2 -t 1m --host http://localhost:8000
 ```
@@ -30,6 +30,7 @@ CTC_API_KEY=… uv run locust -f loadtest.py --headless -u 2 -r 2 -t 1m --host h
 - `nudenet` uses `channels: rgb` (bake-off winner); eval variant `nudenet-bgr` reproduces `nudenet==3.4.2` exactly.
 - eval.py `VARIANTS` name exact files; `alias()` maps config models to the variant that scored them.
 - API errors: `{"error": {"code", "message"}}` via `ApiError` / `ImageError`.
+- Endpoints are deliberately limited (owner): /health, /v1/moderate/image(+/batch), /v1/feedback, /v1/review*. Auth = HS256 JWT (`CTC_JWT_SECRET`), never commit the secret.
 - `eval.py report` overwrites EVAL_REPORT.md (it appends runs/robustness.md if present). Run `robust` before `report`.
 
 ## PROGRESS (update at each checkpoint)

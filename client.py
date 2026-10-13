@@ -1,6 +1,6 @@
 """Typed client example for app backends (copy into your codebase; only needs httpx).
 
-    client = ModerationClient("https://moderation.example.com", api_key=os.environ["CTC_API_KEY"])
+    client = ModerationClient("https://moderation.example.com", token=jwt_signed_with_CTC_JWT_SECRET)
     result = client.moderate(open("photo.jpg", "rb").read(), context="profile_photo",
                              user_id="u_123", idempotency_key=upload_id)
     if result.decision == "APPROVE": publish(...)
@@ -33,8 +33,9 @@ class ModerationError(Exception):
 
 
 class ModerationClient:
-    def __init__(self, base_url: str, api_key: str, timeout: float = 15.0, retries: int = 3):
-        self.http = httpx.Client(base_url=base_url, headers={"X-API-Key": api_key}, timeout=timeout)
+    def __init__(self, base_url: str, token: str, timeout: float = 15.0, retries: int = 3):
+        """token: HS256 JWT with `sub` and `exp` (refresh it before `exp`)."""
+        self.http = httpx.Client(base_url=base_url, headers={"Authorization": f"Bearer {token}"}, timeout=timeout)
         self.retries = retries
 
     def moderate(self, image: bytes, context: Literal["profile_photo", "chat", "post"] | None = None,

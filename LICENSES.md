@@ -30,7 +30,7 @@ Set `models.nudenet.enabled: false` in `config.yaml`, delete `models/nudenet-*.o
 | fastapi, starlette, pydantic, uvicorn, httpx | MIT / BSD-3-Clause | Low | |
 | python-multipart | Apache-2.0 | Low | |
 | PyYAML | MIT | Low | |
-| prometheus-client | Apache-2.0 | Low | |
+| PyJWT | MIT | Low | |
 | Caddy (container) | Apache-2.0 | Low | |
 | Podman (runtime on Mac + server) | Apache-2.0 | Low | Not shipped in our image. |
 | podman-compose (deploy tool) | GPL-2.0 | Low | A CLI we run, not linked into or shipped with the service. |

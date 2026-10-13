@@ -85,7 +85,8 @@ Containerfile, compose.yaml, Caddyfile, deploy.sh           Podman deployment
 |---|---|
 | install deps | `uv sync` |
 | download/convert models (one-off) | `uv run --group export python export.py freepik falconsai nudenet-320n` |
-| create API keys | `uv run python -m ctc_mod.api newkey my-backend` and `… newkey dashboard admin` (add the printed lines to `keys.yaml`) |
+| set the JWT secret | put `CTC_JWT_SECRET=<≥32 random chars>` in `.env` (dev: `export CTC_JWT_SECRET=…` in your shell) |
+| make a test token | `uv run python -m ctc_mod.api token my-backend` (add `admin` for the review endpoints; optional 3rd arg = hours) |
 | run the API (dev) | `uv run uvicorn ctc_mod.api:app --port 8000`, then open http://localhost:8000/docs |
 | run the API in containers | `cp .env.example .env` (set `CTC_DOMAIN=localhost`), then `podman-compose up -d --build` → https://localhost |
 | unit + API tests | `uv run pytest -q` (no weights needed) |
@@ -96,12 +97,14 @@ Containerfile, compose.yaml, Caddyfile, deploy.sh           Podman deployment
 | load test | `CTC_API_KEY=… uv run locust -f loadtest.py --headless -u 2 -r 2 -t 1m --host http://localhost:8000` (add `CTC_INSECURE=1` against local Caddy) |
 | try the client | `client.py` (copy into your backend) |
 
-`keys.yaml` holds only SHA-256 hashes of keys: `keys: [{id, sha256, role: client|admin, rate_per_min}]`. It's re-read when the file changes. **To rotate a key:** add the new key, switch callers over, then delete the old line.
+**Auth:** `Authorization: Bearer <JWT>`, HS256, signed with `CTC_JWT_SECRET`. `sub` and `exp` are required, and `role: admin` is needed for `/v1/review*`. Rate limits apply per `sub`. To rotate the secret, change it in both the token issuer and the server `.env`, then restart; old tokens stop working. See INTEGRATION.md.
 
 ## Configuration (env)
 
 | var | default | meaning |
 |---|---|---|
+| `CTC_JWT_SECRET` | (none, required) | HS256 secret for bearer tokens, ≥ 32 random chars |
+| `CTC_RATE_PER_MIN` | 600 | requests per minute per token `sub` |
 | `CTC_SHADOW` | 0 | 1 = return APPROVE plus `shadow_decision`, `enforced:false` |
 | `CTC_KILL_SWITCH` | 0 | 1 = skip models; everything goes to REVIEW (`KILL_SWITCH`) |
 | `CTC_CONCURRENCY` | 2 | parallel inferences. Set to the vCPU count. |
@@ -109,7 +112,7 @@ Containerfile, compose.yaml, Caddyfile, deploy.sh           Podman deployment
 | `CTC_QUEUE` | 16 | requests waiting beyond this get 503 `OVERLOADED` |
 | `CTC_TIMEOUT_S` | 10 | max time spent waiting for a worker |
 | `CTC_ALLOW_URL` | 0 | enable SSRF-guarded `image_url` input |
-| `CTC_CONFIG`, `CTC_KEYS_FILE`, `CTC_DB`, `CTC_MODELS_DIR` | | file locations |
+| `CTC_CONFIG`, `CTC_DB`, `CTC_MODELS_DIR` | | file locations |
 
 **Policy changes** (anything in `config.yaml`): edit, **bump `policy_version`**, re-run `eval.py report`, then deploy. Each response carries `policy_version`.
 
@@ -151,7 +154,7 @@ mkdir -p ~/ctc
 
 **Server-only files.** Create these on the server; `deploy.sh` never copies or overwrites them:
 - `~/ctc/.env`: copy `.env.example` and set `CTC_DOMAIN`. **Keep `CTC_SHADOW=1` for the first 1–2 weeks.**
-- `~/ctc/keys.yaml`: run `newkey` on your Mac and paste only the hash lines. Give the app backend the client key and the dashboard the admin key. Set permissions with `chmod 644 keys.yaml` (it contains only hashes).
+- In `~/ctc/.env`, set **`CTC_JWT_SECRET`** to a long random secret (`openssl rand -base64 48`) and share it only with the backend and dashboard that mint tokens.
 
 **Deploy from your Mac:**
 
@@ -165,8 +168,8 @@ This runs the tests, rsyncs the code plus the enabled ONNX weights (about 0.2 GB
 **Verify:**
 
 ```bash
-curl https://$CTC_DOMAIN/readyz
-curl -H "X-API-Key: <client key>" -F file=@photo.jpg https://$CTC_DOMAIN/v1/moderate/image
+curl https://$CTC_DOMAIN/health
+curl -H "Authorization: Bearer <token>" -F file=@photo.jpg https://$CTC_DOMAIN/v1/moderate/image
 ```
 
 For logs, run on the server: `podman logs -f ctc_api_1` (names are shown by `podman ps`).
@@ -203,7 +206,6 @@ For logs, run on the server: `podman logs -f ctc_api_1` (names are shown by `pod
 | Going live | Run in shadow mode for 1–2 weeks. Compare `shadow_decision` with moderator outcomes (SQLite `data/ctc.db`, `decisions` table). Then set `CTC_SHADOW=0`. |
 | Backups | The `ctc_data` volume holds `ctc.db` (decisions and feedback, no images). Use `podman volume export ctc_ctc_data > backup.tar` weekly, or snapshot the EBS volume. |
 
-**Metrics:** `GET /metrics` with an admin key. Key metrics: `ctc_decisions_total{decision,context,enforced}`, `ctc_latency_seconds`, `ctc_inflight`, `ctc_errors_total{code}`, `ctc_cache_hits_total`. Scrape them with a self-hosted Prometheus and Grafana, or with the CloudWatch agent's Prometheus support.
 
 **Logs:** one JSON line per decision on stdout, containing request_id, key_id, user_id, decision, reasons, sha256, phash and latency. **Never** image content.
 
