@@ -61,8 +61,10 @@ def test_moderate_and_error_format(api):
 def test_idempotency_batch_and_rate_limit(api):
     c = TestClient(api.app)
     a = post(c, img_bytes(), idempotency_key="k1").json()
-    b = post(c, img_bytes((1, 2, 3)), idempotency_key="k1").json()
+    b = post(c, img_bytes(), idempotency_key="k1").json()
     assert a["request_id"] == b["request_id"] and b["cached"]
+    r = post(c, img_bytes((255, 0, 0)), idempotency_key="k1")  # same key, different image: never replay
+    assert r.status_code == 409 and r.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
     r = c.post("/v1/moderate/image/batch", headers={"Authorization": CLIENT_KEY},
                files=[("files", ("a", img_bytes())), ("files", ("b", b"junk"))]).json()
     assert r[0]["result"]["decision"] == "APPROVE" and r[1]["error"]["code"] == "UNSUPPORTED_MEDIA_TYPE"

@@ -121,6 +121,7 @@ All errors look like `{"error": {"code": "FILE_TOO_LARGE", "message": "…"}}`.
 |---|---|---|
 | 400 | `NO_IMAGE`, `EMPTY_FILE`, `BATCH_TOO_LARGE`, `URL_*` | Bug in the caller. Don't retry. |
 | 401 / 403 | `UNAUTHORIZED`, `TOKEN_EXPIRED` / `FORBIDDEN` | Bad, missing or expired token, or no admin role. On `TOKEN_EXPIRED`, mint a new token and retry once. Otherwise don't retry; alert. |
+| 409 | `IDEMPOTENCY_KEY_REUSED` | You sent a different image with an `idempotency_key` that was already used. Use one unique key per upload (e.g. your upload id). |
 | 413 | `FILE_TOO_LARGE`, `IMAGE_TOO_LARGE` | Ask the user for a smaller image, or downscale to ≤ 4096 px before uploading. |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | Not an accepted image format. |
 | 422 | `CORRUPT_IMAGE`, `TOO_MANY_FRAMES`, `VALIDATION_ERROR` | Bad file or bad field. Don't retry. |

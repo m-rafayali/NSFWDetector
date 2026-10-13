@@ -277,15 +277,24 @@ async def _infer(data: bytes, context: str | None) -> tuple[Decision, bool]:
         slots.release()
 
 
+def _replay(k: dict, idem: str, sha: str) -> ModerationResult | None:
+    """Stored response for a reused idempotency key; refuse if the key was used for a different image
+    (otherwise e.g. Swagger's placeholder key "string" would replay one image's decision for all)."""
+    row = store.q("SELECT response, sha256 FROM decisions WHERE key_id=? AND idem=?", (k["id"], idem))
+    if not row:
+        return None
+    if row[0]["sha256"] != sha:
+        raise ApiError(409, "IDEMPOTENCY_KEY_REUSED", "idempotency_key was already used for a different image")
+    return ModerationResult(**{**json.loads(row[0]["response"]), "cached": True})
+
+
 async def _moderate(data: bytes, k: dict, context, user_id, idem) -> ModerationResult:
-    if idem:
-        row = store.q("SELECT response FROM decisions WHERE key_id=? AND idem=?", (k["id"], idem))
-        if row:
-            return ModerationResult(**{**json.loads(row[0]["response"]), "cached": True})
+    sha = hashlib.sha256(data).hexdigest()
+    if idem and (prev := _replay(k, idem, sha)):
+        return prev
     t0 = time.perf_counter()
     rid = uuid.uuid4().hex
     if KILL:  # skip models entirely; everything goes to humans
-        sha = hashlib.sha256(data).hexdigest()
         d, cached = Decision("REVIEW", ["KILL_SWITCH"], {}, [], [], S["mod"].policy_version if S["ready"] else "", sha, ""), False
     else:
         d, cached = await _infer(data, context)
@@ -302,8 +311,7 @@ async def _moderate(data: bytes, k: dict, context, user_id, idem) -> ModerationR
                  json.dumps(d.scores), d.image_sha256, d.policy_version, res.model_dump_json(),
                  "pending" if real == "REVIEW" else None))
     except sqlite3.IntegrityError:  # concurrent duplicate idempotency key: return the stored one
-        row = store.q("SELECT response FROM decisions WHERE key_id=? AND idem=?", (k["id"], idem))
-        return ModerationResult(**{**json.loads(row[0]["response"]), "cached": True})
+        return _replay(k, idem, sha)
     log.info(json.dumps({"event": "moderated", "request_id": rid, "key_id": k["id"], "user_id": user_id,
                          "context": context, "decision": real, "enforced": not SHADOW, "reasons": d.reasons,
                          "sha256": d.image_sha256, "phash": d.phash, "latency_ms": res.latency_ms, "cached": cached}))
@@ -367,7 +375,7 @@ Context = Literal["profile_photo", "chat", "post"]
 # ---------------------------------------------------------------- routes
 @app.post("/v1/moderate/image", response_model=ModerationResult, tags=["moderation"],
           responses={s: {"description": d} for s, d in {400: "Bad input", 401: "Bad or expired token", 413: "Too large",
-                     415: "Unsupported format", 422: "Undecodable/invalid", 429: "Rate limited", 503: "Busy or loading"}.items()})
+                     409: "idempotency_key reused for another image", 415: "Unsupported format", 422: "Undecodable/invalid", 429: "Rate limited", 503: "Busy or loading"}.items()})
 async def moderate_image(file: UploadFile | None = File(None, description="JPEG, PNG, GIF, WebP or HEIC/HEIF"),
                          image_url: str | None = Form(None, description="Only if enabled server-side (CTC_ALLOW_URL=1)"),
                          context: Context | None = Form(None), user_id: str | None = Form(None, max_length=128),
