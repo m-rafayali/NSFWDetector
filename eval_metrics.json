@@ -2,9 +2,9 @@
   "explicit_auto_approved": 0.1,
   "explicit_caught_auto": 0.9,
   "safe_auto_rejected": 0.0,
-  "safe_sent_to_review": 0.11764705882352941,
+  "safe_sent_to_review": 0.125,
   "borderline_auto_approved": 0.2222222222222222,
-  "review_rate_this_mix": 0.2222222222222222,
+  "review_rate_this_mix": 0.22857142857142856,
   "reject_precision": 0.9,
-  "cost": 3.2777777777777777
+  "cost": 3.3714285714285714
 }

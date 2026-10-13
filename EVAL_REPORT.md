@@ -1,6 +1,6 @@
 # Evaluation report
 
-policy_version `2026-10-13.4` · generated 2026-10-13 13:13 · 185 images (149 dev / 36 test)
+policy_version `2026-10-13.5` · generated 2026-10-13 13:41 · 184 images (149 dev / 35 test)
 
 All numbers come from `eval.py` on our labeled set. Rates use 95% Wilson intervals; cost uses a 1000x percentile bootstrap. Cost matrix (true→pred APPROVE/REVIEW/REJECT): {'safe': [0, 3, 10], 'review': [5, 0, 2], 'reject': [100, 3, 0]}.
 
@@ -15,6 +15,8 @@ All numbers come from `eval.py` on our labeled set. Rates use 95% Wilson interva
 | nudenet.FEMALE_GENITALIA_EXPOSED | 0.899 [0.838–0.944] | 71.4% |
 | nudenet.MALE_GENITALIA_EXPOSED | 0.761 [0.679–0.833] | 28.6% |
 | nudenet.max_exposed | 0.958 [0.917–0.983] | 74.3% |
+| quality.qr_code | 0.500 [0.500–0.500] | 0.0% |
+| quality.unreadable | 0.500 [0.500–0.500] | 0.0% |
 
 ## Decisions
 
@@ -70,11 +72,11 @@ Suggested thresholds (tuned on all dev) are in `runs/tuned_rules.yaml`. Adopt th
 
 ### HELD-OUT TEST (frozen config thresholds)
 
-n = 36  (safe: 17, review: 9, reject: 10)
+n = 35  (safe: 16, review: 9, reject: 10)
 
 | true \ pred | APPROVE | REVIEW | REJECT |
 |---|---|---|---|
-| safe | 15 | 2 | 0 |
+| safe | 14 | 2 | 0 |
 | review | 2 | 6 | 1 |
 | reject | 1 | 0 | 9 |
 
@@ -82,12 +84,12 @@ n = 36  (safe: 17, review: 9, reject: 10)
 |---|---|
 | explicit_auto_approved | 10.0% [1.8–40.4] |
 | explicit_caught_auto | 90.0% [59.6–98.2] |
-| safe_auto_rejected | 0.0% [0.0–18.4] |
-| safe_sent_to_review | 11.8% [3.3–34.3] |
+| safe_auto_rejected | 0.0% [0.0–19.4] |
+| safe_sent_to_review | 12.5% [3.5–36.0] |
 | borderline_auto_approved | 22.2% [6.3–54.7] |
-| review_rate_this_mix | 22.2% [11.7–38.1] |
+| review_rate_this_mix | 22.9% [12.1–39.0] |
 | reject_precision | 90.0% [59.6–98.2] |
-| mean cost / image | 3.278 [0.194–8.945] (bootstrap) |
+| mean cost / image | 3.371 [0.229–9.229] (bootstrap) |
 
 > **Too small:** 10 explicit images. Showing ≤1% explicit auto-approval at 95% confidence needs ≥300 with zero misses. The upper CI bound above is the honest number.
 
@@ -117,7 +119,7 @@ n = 84
 | rotate_15 | 7 | 9 | 68 | 1 |
 | mirror | 6 | 9 | 69 | 0 |
 | grayscale | 7 | 13 | 64 | 1 |
-| blur_r4 | 8 | 23 | 53 | 0 |
+| blur_r4 | 0 | 31 | 53 | 0 |
 | jpeg_q10 | 10 | 25 | 49 | 2 |
 | pad_border_40 | 9 | 22 | 53 | 2 |
 | stickers_on_regions | 14 | 58 | 12 | 6 |

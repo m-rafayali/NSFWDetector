@@ -90,6 +90,8 @@ Only use `decision` (and `enforced`) to decide what to do. `scores` (just the si
 | `EXPLICIT_CONTENT` | the whole image looks sexually explicit |
 | `SUGGESTIVE_CONTENT` | borderline or suggestive (lingerie, poses…) |
 | `NEAR_DUPLICATE_OF_REJECTED` | looks like an image we already rejected |
+| `UNREADABLE_IMAGE` | too small, too dark or too blurred to judge safely |
+| `QR_CODE` | contains a decodable QR code (often used for off-platform solicitation) |
 | `KILL_SWITCH` | automation is switched off and everything goes to humans |
 
 Suggested user-facing messages: on REJECT, *"This photo doesn't meet our community guidelines."* On REVIEW, *"Your photo is being reviewed. This usually takes a few minutes."* Don't show reason codes to users, because that teaches people how to get around the filter.

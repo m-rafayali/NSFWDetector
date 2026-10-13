@@ -2,7 +2,7 @@ import io
 
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageOps
 
 from conftest import CONFIG, img_bytes
 from ctc_mod import engine
@@ -108,3 +108,17 @@ def test_eval_stats_helpers():
     p, lo, hi = ev.wilson(0, 300)
     assert p == 0 and lo == 0 and 0.009 < hi < 0.0135  # rule of three ~1%
     assert ev.auc(np.array([0.9, 0.8]), np.array([0.1, 0.2])) == 1.0
+
+
+def test_quality_flags_unreadable_and_qr_codes():
+    import cv2
+    from ctc_mod.scorers import Quality
+    q = Quality("quality", {"min_side": 100, "min_brightness": 20, "min_sharpness": 15})
+    rng = np.random.default_rng(0)
+    photo = Image.fromarray(rng.integers(0, 255, (300, 300, 3), np.uint8))
+    assert q.score(photo).scores == {"quality.unreadable": 0.0, "quality.qr_code": 0.0}
+    assert q.score(photo.resize((60, 60))).scores["quality.unreadable"] == 1.0          # too small
+    assert q.score(Image.new("RGB", (300, 300), (5, 5, 5))).scores["quality.unreadable"] == 1.0  # dark/flat
+    code = cv2.QRCodeEncoder.create().encode("https://example.com/dm-me")
+    qr = Image.fromarray(cv2.resize(code, (300, 300), interpolation=cv2.INTER_NEAREST)).convert("RGB")
+    assert q.score(ImageOps.expand(qr, 40, "white")).scores["quality.qr_code"] == 1.0

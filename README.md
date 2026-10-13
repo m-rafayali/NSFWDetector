@@ -14,11 +14,33 @@ This is a self-hosted, CPU-only service that decides **APPROVE / REVIEW / REJECT
 | REVIEW | Breastfeeding, thong or extra-revealing swimwear, and other borderline images. |
 | APPROVE | Normal bikini and swimwear, lingerie, shirtless men, everyday photos. |
 
+### Coverage against the full CTC policy list (honest status, 2026-10-13)
+
+| policy item | status |
+|---|---|
+| Explicit real photos: genitals, nipples, anus, buttocks | ✅ detected (75 of 80 labeled auto-rejected, 3 to REVIEW) |
+| Explicit drawn, anime or AI images | 🟡 mostly. Freepik is trained on AI content, NudeNet is photo-only. Vintage anatomical art is missed. |
+| Nudity hidden by sticker, emoji, hand or blur → REJECT | 🟡 mostly goes to **REVIEW**, not REJECT (evasion test: 6 of 70 escaped to APPROVE) |
+| Clothed sex acts, erection outlines, fluids, upskirt/voyeur, sex dolls, fetish wear, bestiality | ❌ no dedicated model. Freepik catches some. Needs labeled examples, then a zero-shot or fine-tuned signal. |
+| Solicitation: QR codes | ✅ decodable QR → REVIEW |
+| Solicitation: text overlays ("DM for content", prices, handles) | ❌ needs OCR (planned) |
+| Unreadable (tiny, dark, blurred) → REVIEW | ✅ |
+| Model disagreement / low confidence never auto-approves | ✅ low review thresholds; "most severe wins" |
+| Shirtless men, gym, swimwear, cleavage, midriff → APPROVE | ✅ mostly (12% of safe photos still go to REVIEW) |
+| Lingerie / sexy clothed → APPROVE (owner) | 🟡 sometimes REVIEW. Needs more labeled examples to loosen safely. |
+| Breastfeeding, thong, underboob, sheer fabric, underwear selfies, body-focused crops, ecchi → REVIEW | 🟡 only when the models see partial exposure; there are no dedicated detectors |
+| Minors always escalate | ❌ hook only (`AgeEstimator`). Needs your legal sign-off before building (biometric data). |
+| Per-surface strictness (profile > gallery > chat) | 🟡 supported (`policy.profiles`), not yet set |
+| Fairness set (mastectomy scars, plus-size, darker skin) | ❌ no labeled examples yet |
+| Gore, weapons, drugs, hate symbols | ❌ out of scope for Phase 1 |
+| Appeals and audit log | ✅ `/v1/feedback`, `/v1/review`, decision log in SQLite |
+
 ## How it decides
 
 ```
 bytes → validate (magic bytes, 15 MB, 40 MP, frames) → EXIF-rotate, to RGB, drop metadata, ≤1280 px
-      → stage 1 (every image): NudeNet-320n body-part detector + Falconsai ViT gate (INT8)   ~50–90 ms on M4
+      → stage 1 (every image): NudeNet-320n body-part detector + Falconsai ViT gate (INT8)
+                               + quality checks (unreadable image, QR code)                ~55–95 ms on M4
       → stage 2 (unless stage 1 is clearly safe or already REJECT): Freepik EVA02 (INT8)      +~300 ms on M4
       → rules in config.yaml: signal ≥ reject → REJECT, ≥ review → REVIEW (worst wins)
       → near-duplicate (pHash) of an earlier REJECT → at least REVIEW

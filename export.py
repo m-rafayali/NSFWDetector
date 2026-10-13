@@ -49,7 +49,7 @@ def nudenet(variant: str, out: Path) -> None:
 if __name__ == "__main__":
     OUT.mkdir(exist_ok=True)
     for name, m in yaml.safe_load(open("config.yaml"))["models"].items():
-        if not m.get("enabled"):
+        if not m.get("enabled") or m["kind"] == "quality":  # quality checks have no weights
             continue
         out = OUT / f"{m.get('file', name)}.onnx"
         if m["kind"] == "detector":

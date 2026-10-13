@@ -65,7 +65,7 @@ def cmd_score(args):
 def load_records():
     if not SCORES.exists():
         sys.exit(f"No {SCORES}. Run `eval.py score` first.")
-    recs = [json.loads(l) for l in SCORES.open()]
+    recs = [r for r in map(json.loads, SCORES.open()) if Path(r["path"]).exists()]  # skip deleted images
     for r in recs:  # strongest exposed-part score, for the per-signal table
         r["scores"]["nudenet.max_exposed"] = max(r["scores"].get(f"nudenet.{c}", 0.0) for c in EXPOSED)
     return recs

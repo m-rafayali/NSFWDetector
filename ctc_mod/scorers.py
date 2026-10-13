@@ -123,6 +123,26 @@ class Detector:
         return Result(out, regions)
 
 
+class Quality:
+    """Cheap, model-free checks (~5 ms). `unreadable` = too small, too dark or too blurred to judge;
+    `qr_code` = a QR code that actually decodes (common solicitation trick). Both are 0/1 signals."""
+
+    def __init__(self, name: str, cfg: dict):
+        self.name, self.cfg, self.version = name, cfg, "opencv-" + cv2.__version__
+        self.qr = cv2.QRCodeDetector()
+
+    def score(self, img: Image.Image) -> Result:
+        g = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2GRAY)
+        sharp = cv2.Laplacian(cv2.resize(g, (256, 256)), cv2.CV_64F).var()
+        c = self.cfg
+        bad = min(img.size) < c["min_side"] or g.mean() < c["min_brightness"] or sharp < c["min_sharpness"]
+        try:
+            text = self.qr.detectAndDecode(g)[0]
+        except cv2.error:
+            text = ""
+        return Result({f"{self.name}.unreadable": float(bad), f"{self.name}.qr_code": float(bool(text))})
+
+
 def _iou(a: np.ndarray, b: np.ndarray) -> float:
     w = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
     h = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
@@ -132,7 +152,8 @@ def _iou(a: np.ndarray, b: np.ndarray) -> float:
 
 def load(models_cfg: dict) -> list[Scorer]:
     """Instantiate the enabled models."""
-    return [(Detector if c["kind"] == "detector" else Classifier)(n, c) for n, c in models_cfg.items() if c.get("enabled")]
+    kinds = {"detector": Detector, "classifier": Classifier, "quality": Quality}
+    return [kinds[c["kind"]](n, c) for n, c in models_cfg.items() if c.get("enabled")]
 
 
 # --- Hooks (interfaces only; no implementation in Phase 1) -------------------------------------

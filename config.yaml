@@ -1,6 +1,6 @@
 # CTC moderation config: model registry + decision policy.
 # Bump policy_version on ANY change to thresholds/rules; it is returned with every decision.
-policy_version: "2026-10-13.4"
+policy_version: "2026-10-13.5"
 
 # Model registry. `export.py` writes models/<file>.onnx. Disable a model with enabled: false
 # (e.g. drop the AGPL region detector) and the pipeline keeps working without it.
@@ -32,6 +32,13 @@ models:
     file: nudenet-320n
     channels: rgb     # nudenet==3.4.2 itself feeds BGR (its cvtColor+swapRB cancel out); RGB scored
                       # slightly better in the bake-off (AUC 0.953 vs 0.948, within noise)
+  quality:      # model-free checks (OpenCV, Apache-2.0): unreadable images and decodable QR codes -> REVIEW
+    kind: quality
+    enabled: true
+    stage: 1
+    min_side: 100           # px; smaller is too small to judge
+    min_brightness: 20      # mean gray 0-255; labeled set min was 56
+    min_sharpness: 15       # Laplacian variance at 256x256; labeled set min was 93
 
 limits:
   max_bytes: 15000000     # 15 MB upload cap
@@ -71,6 +78,8 @@ policy:
        unless: {signal: nudenet.MALE_BREAST_EXPOSED, above: 0.2}}   # shirtless men: pecs often half-read as female
     - {signal: nudenet.BUTTOCKS_EXPOSED,         reject: 0.8,  review: 0.8,  reason: EXPOSED_BUTTOCKS}
     - {signal: freepik.high,                     reject: 0.98, review: 0.02, reason: EXPLICIT_CONTENT}
+    - {signal: quality.unreadable,                             review: 0.5,  reason: UNREADABLE_IMAGE}
+    - {signal: quality.qr_code,                                review: 0.5,  reason: QR_CODE}
   # Per-context overrides keyed by reason code (context = profile_photo | chat | post), e.g.
   #   profile_photo: {EXPLICIT_CONTENT: {review: 0.01}}
   profiles: {}
