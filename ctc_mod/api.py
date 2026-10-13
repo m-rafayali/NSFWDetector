@@ -35,6 +35,20 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .engine import Decision, ImageError, Moderator
 
+
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Local `uvicorn` runs: read KEY=VALUE lines from .env (podman-compose passes them itself).
+    Variables already set in the environment win; .env is never copied into the image."""
+    p = Path(path)
+    if p.is_file():
+        for line in p.read_text().splitlines():
+            k, sep, v = line.partition("=")
+            if sep and k.strip() and not k.strip().startswith("#"):
+                os.environ.setdefault(k.strip(), v.strip())
+
+
+_load_dotenv()
 env = os.environ.get
 CONCURRENCY = int(env("CTC_CONCURRENCY", "2"))
 QUEUE = int(env("CTC_QUEUE", "16"))

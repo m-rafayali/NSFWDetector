@@ -85,7 +85,7 @@ Containerfile, compose.yaml, Caddyfile, deploy.sh           Podman deployment
 |---|---|
 | install deps | `uv sync` |
 | download/convert models (one-off) | `uv run --group export python export.py freepik falconsai nudenet-320n` |
-| set the JWT secret | put `CTC_JWT_SECRET=<≥32 random chars>` in `.env` (dev: `export CTC_JWT_SECRET=…` in your shell) |
+| set the JWT secret | put `CTC_JWT_SECRET=<same secret your backend signs with>` in `.env`. The dev server and the containers both read it from there; restart after changing it. |
 | make a test token | `uv run python -m ctc_mod.api token my-backend` (add `admin` for the review endpoints; optional 3rd arg = hours) |
 | run the API (dev) | `uv run uvicorn ctc_mod.api:app --port 8000`, then open http://localhost:8000/docs |
 | run the API in containers | `cp .env.example .env` (set `CTC_DOMAIN=localhost`), then `podman-compose up -d --build --force-recreate` → https://localhost |
