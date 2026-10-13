@@ -27,7 +27,8 @@ podman-compose up -d --build --force-recreate   # --force-recreate or the old co
 ## Conventions
 - Score keys are `"<model>.<signal>"`. Rules reference them. Reason codes are an API contract (INTEGRATION.md).
 - Responses only expose signals the policy reads (`Moderator.used`); eval scores every stage via `Moderator.score`.
-- `nudenet` uses `channels: rgb` (bake-off winner over the BGR that `nudenet==3.4.2` feeds).
+- `nudenet` uses `channels: rgb` (bake-off winner over the BGR that `nudenet==3.4.2` feeds). Per-class score = best box
+  whose argmax is that class (NudeNet semantics). Rules may have `unless: {signal, above}` (cancels REVIEW, never REJECT).
 - API errors: `{"error": {"code", "message"}}` via `ApiError` / `ImageError`.
 - Endpoints are deliberately limited (owner): /health, /v1/moderate/image(+/batch), /v1/feedback, /v1/review*.
   Auth = HS256 JWT (`CTC_JWT_SECRET`, from env or .env); caller = `sub` or `id` claim; `role: admin` for review/feedback.

@@ -82,18 +82,22 @@ Containerfile, compose.yaml, Caddyfile, deploy.sh                    Podman depl
 
 | | explicit auto-approved | explicit auto-rejected | safe auto-rejected | safe sent to review |
 |---|---|---|---|---|
-| dev, cross-validated (149) | 1 / 70 = 1.4% [0.3–7.7] | 65 / 70 | 0 / 65 = 0% [0–5.6] | 14 / 65 = 21.5% |
-| held-out test (36) | 1 / 10 | 9 / 10 | 0 / 17 | 3 / 17 |
+| dev, cross-validated (149) | 1 / 70 = 1.4% [0.3–7.7] | 65 / 70 | 0 / 65 = 0% [0–5.6] | 8 / 65 = 12.3% [6.4–22.5] |
+| held-out test (36) | 1 / 10 | 9 / 10 | 0 / 17 | 2 / 17 |
 
 **What this means:**
 - Most explicit images are auto-rejected and no safe photo was auto-rejected.
 - **We cannot yet claim ≤1% of explicit images are missed.** The 95% upper bound is about 8% on dev and 40% on test.
-- Expect about 1 in 5 bikini or lingerie photos to go to REVIEW until thresholds are re-tuned on more data.
+- **Shirtless men:** NudeNet often reads one pec as "female breast". Since policy `.4` (2026-10-13), two changes stop this sending shirtless men to REVIEW:
+  - each detector box now counts only as the class NudeNet picked for it;
+  - a male-chest guard: a *moderate* breast score with a male chest present no longer triggers REVIEW (a strong score still REJECTs).
+- **Effect:** safe photos sent to REVIEW fell from 21.5% to 12.3% (all 185 images: 17 → 10). Explicit detection is unchanged.
+- **Sexy but fully clothed photos** sometimes still go to REVIEW, through Freepik's `high` score at 0.06–0.17. The threshold stays at 0.02 because raising it even to 0.05 let 2 explicit dev images through. More labeled data is the way to move it safely.
 
 **Known misses:**
 - **Vintage anatomical engravings.** `reject/images (48).jpeg` is one; it was labeled `reject` but every model scores it safe. This needs more examples like it.
 - **Stickers covering the exposed parts:** 6 of 70 explicit images escaped to APPROVE in the evasion suite.
-- **Other transforms** (crop, rotate, mirror, blur, heavy JPEG compression, text overlay, screenshot of a screen) let 0–2 escape. The rest dropped to REVIEW at worst.
+- **Other transforms** (crop, rotate, mirror, blur, heavy JPEG compression, text overlay, screenshot of a screen) let 0–3 escape. The rest dropped to REVIEW at worst.
 
 **Data hygiene:** `images (48)213.jpeg` and `images (20)213.jpeg` look like copies of dev images. Delete the copies before the next eval.
 

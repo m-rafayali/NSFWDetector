@@ -128,7 +128,9 @@ class Moderator:
         self.scorers = scorers.load(self.cfg["models"])
         self.stage = {s.name: self.cfg["models"][s.name].get("stage", 1) for s in self.scorers}
         # Signals returned to callers: only those the policy actually reads (rules + cascade gate).
-        self.used = {r["signal"] for r in self.cfg["policy"]["rules"]} | set(self.cfg.get("cascade", {}).get("clear_if_below", {}))
+        rules = self.cfg["policy"]["rules"]
+        self.used = ({r["signal"] for r in rules} | {r["unless"]["signal"] for r in rules if "unless" in r}
+                     | set(self.cfg.get("cascade", {}).get("clear_if_below", {})))
         self._cache: OrderedDict = OrderedDict()
         self._rejected = np.zeros(0, np.uint64)  # pHashes of rejected images
         self._lock = threading.Lock()
@@ -157,7 +159,8 @@ class Moderator:
         return scores, regions
 
     def decide(self, scores: dict, context: str | None = None) -> tuple[str, list[str]]:
-        """Transparent rules: REJECT/REVIEW if a signal crosses its (profile-adjusted) threshold."""
+        """Transparent rules: REJECT/REVIEW if a signal crosses its (profile-adjusted) threshold.
+        A rule's optional `unless: {signal, above}` cancels its REVIEW level (never its REJECT level)."""
         pol = self.cfg["policy"]
         overrides = pol.get("profiles", {}).get(context or "", {})
         decision, reasons = "APPROVE", []
@@ -167,6 +170,8 @@ class Moderator:
                 continue
             t = {**rule, **overrides.get(rule["reason"], {})}
             level = "REJECT" if v >= t.get("reject", 2) else "REVIEW" if v >= t.get("review", 2) else None
+            if level == "REVIEW" and "unless" in t and scores.get(t["unless"]["signal"], 0) >= t["unless"]["above"]:
+                level = None
             if level:
                 if rule["reason"] not in reasons:
                     reasons.append(rule["reason"])

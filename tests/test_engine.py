@@ -74,6 +74,14 @@ def test_rules_cascade_and_profiles(mod):
     assert mod.moderate(g, "profile_photo")[0].reasons == ["SUGGESTIVE_CONTENT"]  # stricter profile
 
 
+def test_unless_cancels_review_but_not_reject(mod):
+    rule = mod.cfg["policy"]["rules"][0]  # fake.nsfw: reject 0.8, review 0.4
+    rule["unless"] = {"signal": "fake.medium", "above": 0.1}
+    assert mod.decide({"fake.nsfw": 0.5, "fake.medium": 0.2}) == ("APPROVE", [])
+    assert mod.decide({"fake.nsfw": 0.5, "fake.medium": 0.0}) == ("REVIEW", ["EXPLICIT_CONTENT"])
+    assert mod.decide({"fake.nsfw": 0.9, "fake.medium": 0.2}) == ("REJECT", ["EXPLICIT_CONTENT"])
+
+
 def test_disabled_model_rules_are_skipped(mod):
     mod.scorers = mod.scorers[:1]
     mod.stage = {"fake": 1}

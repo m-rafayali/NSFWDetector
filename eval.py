@@ -29,8 +29,9 @@ SCORES = RUNS / "scores.jsonl"
 CLASSES = ["safe", "review", "reject"]
 PRED = ["APPROVE", "REVIEW", "REJECT"]
 # COST[true][pred]. Owner policy: any exposed nudity is REJECT, so a missed explicit image costs 100 and
-# explicit->REVIEW costs 3; a false reject of a safe photo costs 10, an unnecessary review 1.
-COST = {"safe": [0, 1, 10], "review": [5, 0, 2], "reject": [100, 3, 0]}
+# explicit->REVIEW costs 3; a false reject of a safe photo costs 10, an unnecessary review of a safe photo 3
+# (owner: clothed photos, sexy ones included, should auto-approve).
+COST = {"safe": [0, 3, 10], "review": [5, 0, 2], "reject": [100, 3, 0]}
 EXPOSED = ["FEMALE_GENITALIA_EXPOSED", "MALE_GENITALIA_EXPOSED", "ANUS_EXPOSED", "FEMALE_BREAST_EXPOSED", "BUTTOCKS_EXPOSED"]
 GRID = [0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85,
         0.9, 0.95, 0.98, 0.99, 2.0]  # 2.0 = rule disabled
@@ -124,12 +125,19 @@ class RuleSim:
                 col = np.array([r["scores"].get(rule["signal"], -1.0) for r in recs])
                 self.S[:, j] = np.where(self.cleared, -1.0, col) if stage[model] == 2 else col
         self.rej = np.array([r.get("reject", 2.0) for r in self.rules])
+        # `unless` cancels a rule's REVIEW level: mask those cells below review but keep them able to REJECT.
+        self.unless = np.zeros_like(self.S, bool)
+        for j, rule in enumerate(self.rules):
+            if "unless" in rule:
+                u = rule["unless"]
+                self.unless[:, j] = np.array([r["scores"].get(u["signal"], 0) >= u["above"] for r in recs])
         self.rev = np.array([r.get("review", 2.0) for r in self.rules])
 
     def predict(self, rej=None, rev=None):
         rej = self.rej if rej is None else rej
         rev = self.rev if rev is None else rev
-        return np.where(self.S >= rej, 2, np.where(self.S >= rev, 1, 0)).max(axis=1)
+        lv = np.where(self.S >= rej, 2, np.where(self.S >= rev, 1, 0))
+        return np.where(self.unless & (lv == 1), 0, lv).max(axis=1)
 
 
 def tune(sim, y, idx, passes=3):

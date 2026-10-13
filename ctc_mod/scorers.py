@@ -101,10 +101,13 @@ class Detector:
         x = (np.ascontiguousarray(x.transpose(2, 0, 1)) / 255.0)[None]
         pred = self.sess.run(None, {self.input: x})[0][0].T  # (anchors, 4 + classes)
         cls = pred[:, 4:]
-        best = cls.max(axis=0)
+        conf, ids = cls.max(axis=1), cls.argmax(axis=1)
+        # Per-class score = best box the detector CLASSIFIED as that class (NudeNet's own semantics), so a
+        # male chest that also gets some FEMALE_BREAST_EXPOSED probability counts as MALE_BREAST_EXPOSED.
+        best = np.zeros(cls.shape[1], np.float32)
+        np.maximum.at(best, ids, conf)
         out = {f"{self.name}.{l}": float(s) for l, s in zip(NUDENET_LABELS, best)}
         # Boxes for explainability: per-anchor best class >= 0.25, greedy NMS (IoU 0.45).
-        conf, ids = cls.max(axis=1), cls.argmax(axis=1)
         keep = np.where(conf >= 0.25)[0]
         keep = keep[np.argsort(-conf[keep])]
         boxes = pred[keep, :4] * (side / self.size)  # cx, cy, w, h in original pixels

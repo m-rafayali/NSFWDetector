@@ -1,6 +1,6 @@
 # CTC moderation config: model registry + decision policy.
 # Bump policy_version on ANY change to thresholds/rules; it is returned with every decision.
-policy_version: "2026-10-13.3"
+policy_version: "2026-10-13.4"
 
 # Model registry. `export.py` writes models/<file>.onnx. Disable a model with enabled: false
 # (e.g. drop the AGPL region detector) and the pipeline keeps working without it.
@@ -59,14 +59,16 @@ cascade:
 #   APPROVE: normal bikini, swimwear, lingerie, shirtless men, everyday photos.
 # Decision rules. A signal >= reject -> REJECT, >= review -> REVIEW; the worst rule wins.
 # Rules for disabled models are skipped. `reason` codes are a stable API contract.
-# Thresholds: 5-fold-CV-tuned on 149 dev images (2026-10-13, eval.py, candidate "C"). Small data: re-tune
-# as labeled data grows. Low review thresholds are deliberate (images there were mostly explicit/borderline).
+# Thresholds: 5-fold-CV-tuned on 149 dev images (2026-10-13). .4: male-chest guard + male-genitalia review
+# 0.02->0.1 (dev: safe->REVIEW 14->8, explicit detection unchanged). freepik.high review stays 0.02: raising it
+# even to 0.05 let 2 explicit dev images through. `unless` cancels REVIEW only; a strong score still REJECTs.
 policy:
   rules:
     - {signal: nudenet.FEMALE_GENITALIA_EXPOSED, reject: 0.5,  review: 0.2,  reason: EXPOSED_GENITALIA}
-    - {signal: nudenet.MALE_GENITALIA_EXPOSED,   reject: 0.5,  review: 0.02, reason: EXPOSED_GENITALIA}
+    - {signal: nudenet.MALE_GENITALIA_EXPOSED,   reject: 0.5,  review: 0.1,  reason: EXPOSED_GENITALIA}
     - {signal: nudenet.ANUS_EXPOSED,             reject: 0.5,  review: 0.2,  reason: EXPOSED_ANUS}
-    - {signal: nudenet.FEMALE_BREAST_EXPOSED,    reject: 0.75, review: 0.3,  reason: EXPOSED_BREAST}
+    - {signal: nudenet.FEMALE_BREAST_EXPOSED,    reject: 0.75, review: 0.3,  reason: EXPOSED_BREAST,
+       unless: {signal: nudenet.MALE_BREAST_EXPOSED, above: 0.2}}   # shirtless men: pecs often half-read as female
     - {signal: nudenet.BUTTOCKS_EXPOSED,         reject: 0.8,  review: 0.8,  reason: EXPOSED_BUTTOCKS}
     - {signal: freepik.high,                     reject: 0.98, review: 0.02, reason: EXPLICIT_CONTENT}
   # Per-context overrides keyed by reason code (context = profile_photo | chat | post), e.g.
