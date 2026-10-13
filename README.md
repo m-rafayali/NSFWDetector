@@ -88,7 +88,7 @@ Containerfile, compose.yaml, Caddyfile, deploy.sh           Podman deployment
 | set the JWT secret | put `CTC_JWT_SECRET=<≥32 random chars>` in `.env` (dev: `export CTC_JWT_SECRET=…` in your shell) |
 | make a test token | `uv run python -m ctc_mod.api token my-backend` (add `admin` for the review endpoints; optional 3rd arg = hours) |
 | run the API (dev) | `uv run uvicorn ctc_mod.api:app --port 8000`, then open http://localhost:8000/docs |
-| run the API in containers | `cp .env.example .env` (set `CTC_DOMAIN=localhost`), then `podman-compose up -d --build` → https://localhost |
+| run the API in containers | `cp .env.example .env` (set `CTC_DOMAIN=localhost`), then `podman-compose up -d --build --force-recreate` → https://localhost |
 | unit + API tests | `uv run pytest -q` (no weights needed) |
 | score labeled data | `uv run python eval.py score --data ../labeled` (resumable) |
 | accuracy report | `uv run python eval.py report`, then `--final` once for a release |
@@ -163,7 +163,7 @@ cd NSFWDetector
 ./deploy.sh ubuntu@<elastic-ip>
 ```
 
-This runs the tests, rsyncs the code plus the enabled ONNX weights (about 0.2 GB), then runs `podman-compose up -d --build` on the server. Caddy gets the Let's Encrypt certificate automatically.
+This runs the tests, rsyncs the code plus the enabled ONNX weights (about 0.2 GB), then runs `podman-compose up -d --build --force-recreate` on the server. Caddy gets the Let's Encrypt certificate automatically.
 
 **Verify:**
 
@@ -174,7 +174,7 @@ curl -H "Authorization: Bearer <token>" -F file=@photo.jpg https://$CTC_DOMAIN/v
 
 For logs, run on the server: `podman logs -f ctc_api_1` (names are shown by `podman ps`).
 
-**Go live:** after the shadow period, compare `shadow_decision` with moderator outcomes. Then set `CTC_SHADOW=0` in `.env` and run `podman-compose up -d` on the server.
+**Go live:** after the shadow period, compare `shadow_decision` with moderator outcomes. Then set `CTC_SHADOW=0` in `.env` and run `podman-compose up -d --force-recreate` on the server.
 
 ### Monthly cost model (us-east-1, on-demand, Oct 2026; check current prices)
 
@@ -198,7 +198,7 @@ For logs, run on the server: `podman logs -f ctc_api_1` (names are shown by `pod
 
 | situation | action |
 |---|---|
-| Model misbehaving or too many false rejects | `CTC_KILL_SWITCH=1` in `.env` → `podman-compose up -d`. Everything goes to REVIEW. |
+| Model misbehaving or too many false rejects | `CTC_KILL_SWITCH=1` in `.env` → `podman-compose up -d --force-recreate`. Everything goes to REVIEW. |
 | New policy or thresholds | Edit `config.yaml`, bump `policy_version`, run `eval.py report` (and `--final` if this is a release), commit (CI gate), deploy. |
 | Rollback | `git checkout <previous tag> && ./deploy.sh …` (models are pinned by sha256 prefix in each response's `models[].version`). |
 | 503 `OVERLOADED` rising | Check `ctc_inflight` and CPU credits. Scale up the instance type. Don't raise `CTC_QUEUE` much, because that only adds latency. |
