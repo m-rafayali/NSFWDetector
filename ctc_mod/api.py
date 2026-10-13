@@ -25,7 +25,8 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 import yaml
-from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi.security import APIKeyHeader
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -196,8 +197,11 @@ def _load():
                          "shadow": SHADOW, "kill_switch": KILL}))
 
 
+API_KEY = APIKeyHeader(name="X-API-Key", auto_error=False, description="Your API key (Swagger: Authorize button)")
+
+
 def auth(role: str = "client"):
-    def dep(request: Request, x_api_key: str = Header(None, description="API key")) -> dict:
+    def dep(request: Request, x_api_key: str | None = Depends(API_KEY)) -> dict:
         k = keys.lookup(x_api_key) if x_api_key else None
         if not k:
             raise ApiError(401, "UNAUTHORIZED", "Missing or invalid X-API-Key")
