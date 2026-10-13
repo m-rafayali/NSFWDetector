@@ -43,6 +43,7 @@ def test_moderate_and_error_format(api):
     no_exp = "Bearer " + jwt.encode({"sub": "x"}, SECRET, algorithm="HS256")
     app_style = "Bearer " + jwt.encode({"id": "6a7c", "iat": int(time.time()), "exp": int(time.time()) + 60}, SECRET)
     assert post(c, img_bytes(), key=app_style).status_code == 200  # CTC app tokens carry `id`, not `sub`
+    assert post(c, img_bytes(), key="Bearer " + app_style).status_code == 200  # doubled prefix from Swagger
     no_id = "Bearer " + jwt.encode({"exp": int(time.time()) + 60}, SECRET)
     assert post(c, img_bytes(), key=no_id).status_code == 401
     assert post(c, img_bytes(), key=no_exp).status_code == 401

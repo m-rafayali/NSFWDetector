@@ -191,8 +191,9 @@ def auth(role: str = "client"):
             print(JWT_SECRET)
             print(cred)
             raise ApiError(401, "UNAUTHORIZED", "Missing bearer token")
+        token = cred.credentials.removeprefix("Bearer ").strip()  # tolerate "Bearer Bearer <jwt>" (Swagger paste)
         try:
-            claims = jwt.decode(cred.credentials, JWT_SECRET, algorithms=["HS256"], options={"require": ["exp"]})
+            claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"], options={"require": ["exp"]})
         except jwt.ExpiredSignatureError:
             raise ApiError(401, "TOKEN_EXPIRED", "Token has expired")
         except jwt.InvalidTokenError:
