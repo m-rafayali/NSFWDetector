@@ -377,9 +377,14 @@ Context = Literal["profile_photo", "chat", "post"]
           responses={s: {"description": d} for s, d in {400: "Bad input", 401: "Bad or expired token", 413: "Too large",
                      409: "idempotency_key reused for another image", 415: "Unsupported format", 422: "Undecodable/invalid", 429: "Rate limited", 503: "Busy or loading"}.items()})
 async def moderate_image(file: UploadFile | None = File(None, description="JPEG, PNG, GIF, WebP or HEIC/HEIF"),
-                         image_url: str | None = Form(None, description="Only if enabled server-side (CTC_ALLOW_URL=1)"),
-                         context: Context | None = Form(None), user_id: str | None = Form(None, max_length=128),
-                         idempotency_key: str | None = Form(None, max_length=128), k: dict = Depends(auth())):
+                         image_url: str | None = Form(None, description="Only if enabled server-side (CTC_ALLOW_URL=1)",
+                                                      json_schema_extra={"example": ""}),
+                         context: Context | None = Form(None),
+                         user_id: str | None = Form(None, max_length=128, json_schema_extra={"example": ""}),
+                         idempotency_key: str | None = Form(None, max_length=128, json_schema_extra={"example": ""},
+                                                            description="One unique key per upload (e.g. upload id)"),
+                         k: dict = Depends(auth())):
+    image_url, user_id, idempotency_key = image_url or None, user_id or None, idempotency_key or None  # "" = unset
     if file is not None:
         data = await _read(file)
     elif image_url:
@@ -393,8 +398,10 @@ async def moderate_image(file: UploadFile | None = File(None, description="JPEG,
 
 @app.post("/v1/moderate/image/batch", response_model=list[BatchItem], tags=["moderation"])
 async def moderate_batch(files: list[UploadFile] = File(..., description=f"Up to {BATCH_MAX} images"),
-                         context: Context | None = Form(None), user_id: str | None = Form(None, max_length=128),
+                         context: Context | None = Form(None),
+                         user_id: str | None = Form(None, max_length=128, json_schema_extra={"example": ""}),
                          k: dict = Depends(auth())):
+    user_id = user_id or None
     if len(files) > BATCH_MAX:
         raise ApiError(400, "BATCH_TOO_LARGE", f"At most {BATCH_MAX} files per batch")
     if not limiter.allow(k["id"], len(files) - 1):  # each image counts against the rate limit
