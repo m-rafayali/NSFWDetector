@@ -16,7 +16,7 @@ This is an engineering risk inventory, **not legal advice**. Licenses were check
 
 ### Removing the AGPL component
 
-Set `models.nudenet.enabled: false` in `config.yaml`, delete `models/nudenet-*.onnx`, and bump `policy_version`. Rules that reference `nudenet.*` switch off automatically, and the classifier rules (`EXPLICIT_CONTENT`, `SUGGESTIVE_CONTENT`) keep working. **What you lose:** `regions` boxes, the body-part reason codes, and some recall on explicit images that the classifiers score low. **Re-run `eval.py report` before shipping that change**, because the eval measures how much recall drops. I know of no permissively licensed NSFW region detector of comparable quality as of 2026-10. Most YOLO-based ones inherit AGPL from Ultralytics.
+Set `models.nudenet.enabled: false` in `config.yaml`, delete `models/nudenet-*.onnx`, and bump `policy_version`. Rules that reference `nudenet.*` switch off automatically, and the classifier rule (`EXPLICIT_CONTENT`, Freepik) keeps working. Also remove the `nudenet.*` entries from `cascade.clear_if_below`, or Falconsai alone will decide which images skip Freepik. **What you lose:** `regions` boxes, the body-part reason codes, and some recall on explicit images that the classifiers score low. **Re-run `eval.py report` before shipping that change**, because the eval measures how much recall drops. I know of no permissively licensed NSFW region detector of comparable quality as of 2026-10. Most YOLO-based ones inherit AGPL from Ultralytics.
 
 ## Libraries (runtime image)
 
